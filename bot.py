@@ -15,7 +15,8 @@ from telegram.ext import (
 # ---------------- CONFIGURATION ----------------
 BOT_TOKEN = "9076286788:AAFcfibMCKsdMVvkkt3ajfacE6KRyLYAuLY"
 ADMINS = ["raj1235567"]
-UPI_ID = "soniraaj65@ybl"
+UPI_ID = "choudharyvikash4705-2@okicici"
+PAYEE_NAME = "Vikash Choudhary"
 COMMISSION_PERCENT = 10
 PORT = int(os.environ.get("PORT", 10000))
 
@@ -99,7 +100,8 @@ async def rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def qr_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     caption = (
         f"💳 *DEPOSIT PAYMENT DETAILS*\n\n"
-        f"• UPI ID: `{UPI_ID}`\n\n"
+        f"• *Name:* {PAYEE_NAME}\n"
+        f"• *UPI ID:* `{UPI_ID}`\n\n"
         f"Payment karne ke baad screenshot admin ko bhejein balance add karwane ke liye!"
     )
     if os.path.exists("qr.jpg"):
