@@ -91,25 +91,35 @@ async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "• `/open <amount>` - New challenge create karein\n"
             "• `/table` - Active matches dekhein\n"
             "• `/qr` - Deposit scan aur UPI ID paane ke liye\n"
+            "• `/withdraw <amt> <upi>` - Payout lene ke liye\n"
             "• `/rules` - Game ke rules padhein\n\n"
             "💰 *Add balance karne ke liye chat mein `qr` bhejein!*"
         )
         await context.bot.send_message(chat_id=update.effective_chat.id, text=welcome_text, parse_mode="Markdown")
 
-# ---------------- AUTO MODERATION (GALI & LINK FILTER) ----------------
+# ---------------- AUTO MODERATION & TEXT TRIGGERS ----------------
 async def auto_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
 
-    text = update.message.text.lower()
+    text = update.message.text.lower().strip()
     sender = update.effective_user
     username = f"@{sender.username}" if sender.username else sender.first_name
     sender_clean = (sender.username or "").lower().replace("@", "")
 
-    # Admins ko filter bypass karne allow karein
+    # 1. Text Triggers (Sabke liye execute hoga, chahe user ho ya admin)
+    if text in ["qr", "payment", "scanner"]:
+        await qr_command(update, context)
+        return
+    elif text in ["bet", "open"]:
+        await update.message.reply_text("🎲 Table open karne ke liye command bhejein: `/open <amount>` (Example: `/open 50`)", parse_mode="Markdown")
+        return
+
+    # 2. Admins ko gaali/link filter bypass karne allow karein
     if sender_clean in ADMINS:
         return
 
+    # 3. Moderation Filters
     words = text.split()
     contains_bad_word = any(bad in words or bad in text for bad in BAD_WORDS)
     contains_link = "http://" in text or "https://" in text or "t.me/" in text
@@ -117,7 +127,7 @@ async def auto_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if contains_bad_word:
         try:
             await update.message.delete()
-            warn = await context.bot.send_message(
+            await context.bot.send_message(
                 chat_id=update.effective_chat.id,
                 text=f"⚠️ {username}, group me gaali ya abusive bhasha allowed nahi hai! Message deleted."
             )
@@ -136,12 +146,6 @@ async def auto_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logging.error(f"Link deletion error: {e}")
         return
 
-    # Normal text triggers
-    if text.strip() in ["qr", "payment", "scanner"]:
-        await qr_command(update, context)
-    elif text.strip() in ["bet", "open"]:
-        await update.message.reply_text("🎲 Table open karne ke liye command bhejein: `/open <amount>` (Example: `/open 50`)", parse_mode="Markdown")
-
 # ---------------- BOT HANDLERS ----------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -154,6 +158,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/table` - Active challenges dekho\n"
         "• `/cancel` - Apna open challenge cancel karo\n"
         "• `/bal` - Apna wallet balance check karo\n"
+        "• `/withdraw <amt> <upi>` - Withdrawal request lagao\n"
         "• `/rules` - Game rules padho\n"
         "• `/qr` - Deposit scan aur UPI ID paane ke liye\n\n"
         "⚡ Send `qr` or `bet` anytime in chat."
@@ -328,6 +333,50 @@ async def view_tables(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"• Host: @{r['host']} | Entry: ₹{r['amount']} ➔ `/join @{r['host']}`\n"
     await update.message.reply_text(text, parse_mode="Markdown")
 
+# ---------------- WITHDRAWAL SYSTEM ----------------
+
+async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        sender = update.effective_user.username
+        if not sender:
+            await update.message.reply_text("❌ Pehle apna Telegram username set karein.")
+            return
+
+        sender_clean = sender.lower().replace("@", "")
+
+        if len(context.args) < 2 or not context.args[0].isdigit():
+            await update.message.reply_text("⚠️ Sahi format: `/withdraw <amount> <upi_id>`\nExample: `/withdraw 100 name@okaxis`", parse_mode="Markdown")
+            return
+
+        amount = int(context.args[0])
+        upi_id = context.args[1]
+
+        if amount < 50:
+            await update.message.reply_text("❌ Minimum withdrawal amount ₹50 hai.")
+            return
+
+        current_bal = get_user_balance(sender_clean)
+        if current_bal < amount:
+            await update.message.reply_text(f"❌ Low Balance! Aapka balance ₹{current_bal} hai.")
+            return
+
+        # Wallet se balance deduct/hold karo
+        set_user_balance(sender_clean, current_bal - amount)
+
+        msg = (
+            f"🔔 *WITHDRAWAL REQUEST RECEIVED*\n\n"
+            f"• *User:* @{sender_clean}\n"
+            f"• *Amount:* ₹{amount}\n"
+            f"• *UPI ID:* `{upi_id}`\n"
+            f"• *Remaining Balance:* ₹{current_bal - amount}\n\n"
+            f"Admin verify karke jald payment bhej denge! ✅"
+        )
+        await update.message.reply_text(msg, parse_mode="Markdown")
+
+    except Exception as e:
+        logging.error(f"Error in withdraw: {e}")
+        await update.message.reply_text("⚠️ Withdrawal process karne mein error aaya.")
+
 # ---------------- ADMIN COMMANDS ----------------
 
 async def add_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -438,12 +487,13 @@ def main():
     app.add_handler(CommandHandler("join", join_table))
     app.add_handler(CommandHandler("code", send_code))
     app.add_handler(CommandHandler("table", view_tables))
+    app.add_handler(CommandHandler("withdraw", withdraw))
     app.add_handler(CommandHandler("addbal", add_balance))
     app.add_handler(CommandHandler("cutbal", cut_balance))
     app.add_handler(CommandHandler("win", winner))
     app.add_handler(CommandHandler("sheet", wallet_sheet))
 
-    # Auto-Moderation (Gali, Links & Triggers)
+    # Auto-Moderation & Triggers
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), auto_moderation))
 
     app.add_error_handler(error_handler)
