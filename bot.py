@@ -8,6 +8,7 @@ from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
+    ChatMemberHandler,
     ContextTypes,
     filters,
 )
@@ -68,6 +69,26 @@ def set_user_balance(username, bal):
     username = username.lower().replace("@", "")
     c.execute("INSERT OR REPLACE INTO users (username, balance) VALUES (?, ?)", (username, bal))
     db.commit()
+
+# ---------------- WELCOME HANDLER (NEW MEMBERS) ----------------
+async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    result = update.chat_member
+    if result.old_chat_member.status in ["left", "kicked"] and result.new_chat_member.status in ["member", "administrator"]:
+        new_user = result.new_chat_member.user
+        mention = f"@{new_user.username}" if new_user.username else new_user.first_name
+        
+        welcome_text = (
+            f"👋 *WELCOME TO LUDO EMPIRE, {mention}!* 🎲\n\n"
+            "✨ *Yahan khele aur jeetein 100% safe & fast payouts ke sath!*\n\n"
+            "🎮 *Quick Commands:*\n"
+            "• `/bal` - Apna wallet balance check karein\n"
+            "• `/open <amount>` - New challenge create karein\n"
+            "• `/table` - Active matches dekhein\n"
+            "• `/qr` - Deposit scan aur UPI ID paane ke liye\n"
+            "• `/rules` - Game ke rules padhein\n\n"
+            "💰 *Add balance karne ke liye chat mein `qr` bhejein!*"
+        )
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=welcome_text, parse_mode="Markdown")
 
 # ---------------- BOT HANDLERS ----------------
 
@@ -203,7 +224,7 @@ async def join_table(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if get_user_balance(host) < amt:
-            await update.message.reply_text(f"❌ Host ke wallet me sufficient balance nahi hai.")
+            await update.message.reply_text("❌ Host ke wallet me sufficient balance nahi hai.")
             return
 
         set_user_balance(host, get_user_balance(host) - amt)
@@ -361,6 +382,9 @@ def main():
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
+    # Welcome new chat members
+    app.add_handler(ChatMemberHandler(welcome_new_member, ChatMemberHandler.CHAT_MEMBER))
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("rules", rules))
     app.add_handler(CommandHandler("qr", qr_command))
@@ -379,7 +403,7 @@ def main():
     app.add_error_handler(error_handler)
 
     logging.info("Bot is starting polling...")
-    app.run_polling(drop_pending_updates=True)
+    app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
