@@ -18,7 +18,7 @@ def start_server():
 threading.Thread(target=start_server, daemon=True).start()
 
 # --- BOT CONFIGURATION ---
-BOT_TOKEN = "9076286788:AAFcflbMCKSdMVvkkt3ajfacE6KRyLYAuLY"
+BOT_TOKEN = "9076286788:AAFcfibMCKsdMVvkkt3ajfacE6KRyLYAuLY"
 ADMIN_USERNAMES = ["Raj1235567"]
 COMMISSION_PERCENT = 10
 UPI_ID = "choudharyvikash4705-2@okicici"
