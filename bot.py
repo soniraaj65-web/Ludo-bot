@@ -21,6 +21,12 @@ PAYEE_NAME = "Vikash Choudhary"
 COMMISSION_PERCENT = 10
 PORT = int(os.environ.get("PORT", 10000))
 
+# Galiyon aur spam words ki list
+BAD_WORDS = [
+    "mc", "bc", "bhosdike", "chutiya", "madarchod", "gandu", 
+    "lauda", "lodu", "behenchod", "harami", "bkl", "bsdk", "randi"
+]
+
 logging.basicConfig(level=logging.INFO)
 
 # ---------------- DUMMY HTTP SERVER (RENDER KEEP-ALIVE) ----------------
@@ -89,6 +95,52 @@ async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "💰 *Add balance karne ke liye chat mein `qr` bhejein!*"
         )
         await context.bot.send_message(chat_id=update.effective_chat.id, text=welcome_text, parse_mode="Markdown")
+
+# ---------------- AUTO MODERATION (GALI & LINK FILTER) ----------------
+async def auto_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return
+
+    text = update.message.text.lower()
+    sender = update.effective_user
+    username = f"@{sender.username}" if sender.username else sender.first_name
+    sender_clean = (sender.username or "").lower().replace("@", "")
+
+    # Admins ko filter bypass karne allow karein
+    if sender_clean in ADMINS:
+        return
+
+    words = text.split()
+    contains_bad_word = any(bad in words or bad in text for bad in BAD_WORDS)
+    contains_link = "http://" in text or "https://" in text or "t.me/" in text
+
+    if contains_bad_word:
+        try:
+            await update.message.delete()
+            warn = await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=f"⚠️ {username}, group me gaali ya abusive bhasha allowed nahi hai! Message deleted."
+            )
+        except Exception as e:
+            logging.error(f"Moderation error: {e}")
+        return
+
+    if contains_link:
+        try:
+            await update.message.delete()
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=f"⚠️ {username}, group me promotional links bhejna mana hai! Message deleted."
+            )
+        except Exception as e:
+            logging.error(f"Link deletion error: {e}")
+        return
+
+    # Normal text triggers
+    if text.strip() in ["qr", "payment", "scanner"]:
+        await qr_command(update, context)
+    elif text.strip() in ["bet", "open"]:
+        await update.message.reply_text("🎲 Table open karne ke liye command bhejein: `/open <amount>` (Example: `/open 50`)", parse_mode="Markdown")
 
 # ---------------- BOT HANDLERS ----------------
 
@@ -363,15 +415,6 @@ async def wallet_sheet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"• @{r['username']}: ₹{r['balance']}\n"
     await update.message.reply_text(text, parse_mode="Markdown")
 
-async def text_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
-        return
-    text = update.message.text.lower().strip()
-    if text in ["qr", "payment", "scanner"]:
-        await qr_command(update, context)
-    elif text in ["bet", "open"]:
-        await update.message.reply_text("🎲 Table open karne ke liye command bhejein: `/open <amount>` (Example: `/open 50`)", parse_mode="Markdown")
-
 # Global Error Handler
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logging.error(msg="Exception while handling an update:", exc_info=context.error)
@@ -385,6 +428,7 @@ def main():
     # Welcome new chat members
     app.add_handler(ChatMemberHandler(welcome_new_member, ChatMemberHandler.CHAT_MEMBER))
 
+    # Command Handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("rules", rules))
     app.add_handler(CommandHandler("qr", qr_command))
@@ -398,7 +442,9 @@ def main():
     app.add_handler(CommandHandler("cutbal", cut_balance))
     app.add_handler(CommandHandler("win", winner))
     app.add_handler(CommandHandler("sheet", wallet_sheet))
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), text_trigger))
+
+    # Auto-Moderation (Gali, Links & Triggers)
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), auto_moderation))
 
     app.add_error_handler(error_handler)
 
@@ -407,4 +453,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
+        
