@@ -1,8 +1,24 @@
-import sqlite3, os
+import sqlite3, os, threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-BOT_TOKEN = "9076286788:AAFcfibMCKsdMVvkkt3ajfacE6KRyLYAuLY"
+# --- DUMMY SERVER FOR RENDER ---
+class SimpleHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is alive!")
+
+def start_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), SimpleHandler)
+    server.serve_forever()
+
+threading.Thread(target=start_server, daemon=True).start()
+
+# --- BOT CONFIGURATION ---
+BOT_TOKEN = "9076286788:AAFcflbMCKSdMVvkkt3ajfacE6KRyLYAuLY"
 ADMIN_USERNAMES = ["Raj1235567"]
 COMMISSION_PERCENT = 10
 UPI_ID = "choudharyvikash4705-2@okicici"
@@ -11,7 +27,7 @@ PAYEE_NAME = "Vikash Choudhary"
 conn = sqlite3.connect("ludo_data.db", check_same_thread=False)
 cur = conn.cursor()
 cur.execute("CREATE TABLE IF NOT EXISTS wallets (username TEXT PRIMARY KEY, balance INTEGER DEFAULT 0)")
-cur.execute("CREATE TABLE IF NOT EXISTS matches (id INTEGER PRIMARY KEY AUTOINCREMENT, host TEXT, opponent TEXT, amount INTEGER, code TEXT, status TEXT)")
+cur.execute("CREATE TABLE IF NOT EXISTS matches (id INTEGER PRIMARY KEY AUTOINCREMENT, host TEXT, opponent TEXT, amount INTEGER, status TEXT, code TEXT)")
 conn.commit()
 
 def get_bal(u):
@@ -26,95 +42,106 @@ def set_bal(u, amt):
     return new_b
 
 async def start(u: Update, c: ContextTypes.DEFAULT_TYPE):
-    msg = ("👑 *THE LUDO EMPIRE BOT* 👑\n\n"
-           "🎮 *Commands:*\n"
-           "👉 `/bal` - Wallet balance\n"
-           "👉 `/open <amt>` - Create match\n"
-           "👉 `/join <host>` - Join match\n"
-           "👉 `/code <code>` - Room code\n"
-           "👉 `/cancel` - Cancel open match\n"
-           "👉 `/table` - Active tables\n"
-           "👉 `/rules` - Group rules\n"
-           "👉 `/qr` - Deposit QR\n\n"
-           "🛡️ *Admin:*\n"
-           "👉 `/addbal <user> <amt>`\n"
-           "👉 `/cutbal <user> <amt>`\n"
-           "👉 `/win <user>`\n"
-           "👉 `/sheet`")
+    msg = (
+        "🎲 *LUDO BETTING BOT READY*\n\n"
+        "📌 *User Commands:*\n"
+        "• `/bal` - Check wallet balance\n"
+        "• `/open <amt>` - Create challenge\n"
+        "• `/join <host>` - Join challenge\n"
+        "• `/code <code>` - Room code set karein\n"
+        "• `/cancel` - Cancel active challenge\n"
+        "• `/table` - Running matches list\n"
+        "• `/rules` - Game guidelines\n"
+        "• `/qr` - Deposit scanner\n\n"
+        "👑 *Admin Commands:*\n"
+        "• `/addbal @user <amt>`\n"
+        "• `/cutbal @user <amt>`\n"
+        "• `/win @user`\n"
+        "• `/sheet`"
+    )
     await u.message.reply_text(msg, parse_mode="Markdown")
 
 async def rules(u: Update, c: ContextTypes.DEFAULT_TYPE):
-    await u.message.reply_text("📜 *RULES:*\n1. Result ke 5 min me screenshot dalein.\n2. 3 min me room code generate karein.\n3. Disconnect par samne wala winner hoga.")
+    msg = (
+        "📜 *GAME RULES:*\n"
+        "1. Match over hone par clean screenshot bhejhein.\n"
+        "2. Fake screenshot ya fraud par balance zero aur ban lagaya jayega.\n"
+        "3. Har match jeetne par 10% admin commission kategi."
+    )
+    await u.message.reply_text(msg, parse_mode="Markdown")
 
 async def bal(u: Update, c: ContextTypes.DEFAULT_TYPE):
-    user = u.effective_user.username
-    if not user: return await u.message.reply_text("Telegram username set karein.")
-    await u.message.reply_text(f"👤 @{user}\n💰 Balance: ₹{get_bal(user)}")
+    un = u.effective_user.username
+    if not un: return await u.message.reply_text("Telegram username set karein.")
+    await u.message.reply_text(f"💰 Balance: ₹{get_bal(un)}")
 
 async def addbal(u: Update, c: ContextTypes.DEFAULT_TYPE):
-    if (u.effective_user.username or "").lower() not in [a.lower() for a in ADMIN_USERNAMES]: return
-    if len(c.args) < 2: return await u.message.reply_text("Usage: `/addbal user 100`")
-    tar, amt = c.args[0].replace("@",""), int(c.args[1])
-    tot = set_bal(tar, amt)
-    await u.message.reply_text(f"✅ ₹{amt} added to @{tar}. Total: ₹{tot}")
+    if (u.effective_user.username or "").lower() not in [a.lower() for a in ADMIN_USERNAMES] or len(c.args) < 2: return
+    user, amt = c.args[0].replace("@", "").lower(), int(c.args[1])
+    nb = set_bal(user, amt)
+    await u.message.reply_text(f"✅ ₹{amt} added to @{user}. New: ₹{nb}")
 
 async def cutbal(u: Update, c: ContextTypes.DEFAULT_TYPE):
-    if (u.effective_user.username or "").lower() not in [a.lower() for a in ADMIN_USERNAMES]: return
-    if len(c.args) < 2: return await u.message.reply_text("Usage: `/cutbal user 50`")
-    tar, amt = c.args[0].replace("@",""), int(c.args[1])
-    tot = set_bal(tar, -amt)
-    await u.message.reply_text(f"🔻 ₹{amt} cut from @{tar}. Total: ₹{tot}")
+    if (u.effective_user.username or "").lower() not in [a.lower() for a in ADMIN_USERNAMES] or len(c.args) < 2: return
+    user, amt = c.args[0].replace("@", "").lower(), int(c.args[1])
+    nb = set_bal(user, -amt)
+    await u.message.reply_text(f"✂️ ₹{amt} cut from @{user}. New: ₹{nb}")
 
 async def sheet(u: Update, c: ContextTypes.DEFAULT_TYPE):
     if (u.effective_user.username or "").lower() not in [a.lower() for a in ADMIN_USERNAMES]: return
     cur.execute("SELECT username, balance FROM wallets WHERE balance > 0")
     rows = cur.fetchall()
-    t = "📊 *LEDGER SHEET*\n\n" + "\n".join([f"• @{r[0]}: ₹{r[1]}" for r in rows])
-    await u.message.reply_text(t if rows else "Koi balance nahi hai.", parse_mode="Markdown")
+    if not rows: return await u.message.reply_text("Koi active balance nahi mila.")
+    msg = "📊 *WALLET SHEET:*\n" + "\n".join([f"• @{r[0]}: ₹{r[1]}" for r in rows])
+    await u.message.reply_text(msg, parse_mode="Markdown")
 
 async def open_match(u: Update, c: ContextTypes.DEFAULT_TYPE):
-    user = u.effective_user.username
-    if not user or not c.args: return await u.message.reply_text("Usage: `/open 100`")
+    un = u.effective_user.username
+    if not un or not c.args: return await u.message.reply_text("Usage: `/open 100`")
     amt = int(c.args[0])
-    if get_bal(user) < amt: return await u.message.reply_text(f"Kam balance! Deposit ke liye `/qr` karein.")
-    cur.execute("SELECT id FROM matches WHERE host = ? AND status = 'OPEN'", (user.lower(),))
-    if cur.fetchone(): return await u.message.reply_text("Ek match already open hai.")
-    cur.execute("INSERT INTO matches (host, opponent, amount, code, status) VALUES (?, '', ?, '', 'OPEN')", (user.lower(), amt))
+    if get_bal(un) < amt: return await u.message.reply_text("Balance kam hai. Deposit karein.")
+    cur.execute("SELECT id FROM matches WHERE host = ? AND status IN ('WAITING', 'PLAYING')", (un.lower(),))
+    if cur.fetchone(): return await u.message.reply_text("Aapka pehle se ek match open hai.")
+    cur.execute("INSERT INTO matches (host, opponent, amount, status, code) VALUES (?, '', ?, 'WAITING', '')", (un.lower(), amt))
     conn.commit()
-    win_amt = (amt * 2) - int((amt * 2) * (COMMISSION_PERCENT / 100))
-    await u.message.reply_text(f"🎲 *NEW MATCH*\nHost: @{user}\nEntry: ₹{amt}\nWin: ₹{win_amt}\n👉 `/join {user}`", parse_mode="Markdown")
+    await u.message.reply_text(f"🎲 *TABLE OPENED!*\nHost: @{un}\nAmount: ₹{amt}\nJoin karne ke liye: `/join {un}`", parse_mode="Markdown")
 
 async def join_match(u: Update, c: ContextTypes.DEFAULT_TYPE):
-    user = u.effective_user.username
-    if not user or not c.args: return
-    host = c.args[0].replace("@","").lower()
-    if host == user.lower(): return
-    cur.execute("SELECT id, amount FROM matches WHERE host = ? AND status = 'OPEN'", (host,))
+    un = u.effective_user.username
+    if not un or not c.args: return await u.message.reply_text("Usage: `/join host_username`")
+    host = c.args[0].replace("@", "").lower()
+    if host == un.lower(): return await u.message.reply_text("Khud ka match join nahi kar sakte.")
+    cur.execute("SELECT id, amount FROM matches WHERE host = ? AND status = 'WAITING'", (host,))
     m = cur.fetchone()
-    if not m: return await u.message.reply_text("Match open nahi hai.")
+    if not m: return await u.message.reply_text("Table nahi mila ya join ho chuka hai.")
     mid, amt = m
-    if get_bal(user) < amt: return await u.message.reply_text(f"Balance kam hai! Required: ₹{amt}")
-    set_bal(host, -amt); set_bal(user, -amt)
-    cur.execute("UPDATE matches SET opponent = ?, status = 'PLAYING' WHERE id = ?", (user.lower(), mid))
+    if get_bal(un) < amt: return await u.message.reply_text("Balance insufficient hai.")
+    set_bal(host, -amt)
+    set_bal(un, -amt)
+    cur.execute("UPDATE matches SET opponent = ?, status = 'PLAYING' WHERE id = ?", (un.lower(), mid))
     conn.commit()
-    await u.message.reply_text(f"⚔️ *MATCH FIXED*\n🔴 @{host} vs 🔵 @{user}\nEntry: ₹{amt} deducted.\n👉 @{host} code dalein: `/code 1234`", parse_mode="Markdown")
+    await u.message.reply_text(f"⚔️ *MATCH STARTED!*\nHost: @{host} vs @{un}\nBet: ₹{amt}\nHost room code daalein: `/code 12345678`", parse_mode="Markdown")
 
 async def set_code(u: Update, c: ContextTypes.DEFAULT_TYPE):
-    user = u.effective_user.username
-    if not c.args: return
+    un = u.effective_user.username
+    if not un or not c.args: return await u.message.reply_text("Usage: `/code 12345678`")
     code = c.args[0]
-    cur.execute("SELECT id FROM matches WHERE (host = ? OR opponent = ?) AND status = 'PLAYING'", (user.lower(), user.lower()))
+    cur.execute("SELECT opponent FROM matches WHERE host = ? AND status = 'PLAYING'", (un.lower(),))
     m = cur.fetchone()
-    if not m: return await u.message.reply_text("Running match nahi mila.")
-    cur.execute("UPDATE matches SET code = ? WHERE id = ?", (code, m[0]))
+    if not m: return await u.message.reply_text("Koi active playing match nahi mila.")
+    cur.execute("UPDATE matches SET code = ? WHERE host = ? AND status = 'PLAYING'", (code, un.lower()))
     conn.commit()
-    await u.message.reply_text(f"🎯 *ROOM CODE:* `{code}`\nGame start karein!", parse_mode="Markdown")
+    await u.message.reply_text(f"🔑 *ROOM CODE:*\n`{code}`\n@{m[0]} join karein!", parse_mode="Markdown")
 
 async def cancel_match(u: Update, c: ContextTypes.DEFAULT_TYPE):
-    user = u.effective_user.username
-    cur.execute("DELETE FROM matches WHERE host = ? AND status = 'OPEN'", (user.lower(),))
+    un = u.effective_user.username
+    if not un: return
+    cur.execute("SELECT id FROM matches WHERE host = ? AND status = 'WAITING'", (un.lower(),))
+    m = cur.fetchone()
+    if not m: return await u.message.reply_text("Koi open match nahi mila jise cancel karein.")
+    cur.execute("DELETE FROM matches WHERE id = ?", (m[0],))
     conn.commit()
-    await u.message.reply_text("Open match cancel ho gaya.")
+    await u.message.reply_text("✅ Table cancel kar diya gaya.")
 
 async def table(u: Update, c: ContextTypes.DEFAULT_TYPE):
     cur.execute("SELECT host, opponent, amount, status, code FROM matches WHERE status != 'COMPLETED'")
@@ -125,7 +152,7 @@ async def table(u: Update, c: ContextTypes.DEFAULT_TYPE):
 
 async def win(u: Update, c: ContextTypes.DEFAULT_TYPE):
     if (u.effective_user.username or "").lower() not in [a.lower() for a in ADMIN_USERNAMES] or not c.args: return
-    winner = c.args[0].replace("@","").lower()
+    winner = c.args[0].replace("@", "").lower()
     cur.execute("SELECT id, amount FROM matches WHERE (host = ? OR opponent = ?) AND status = 'PLAYING'", (winner, winner))
     m = cur.fetchone()
     if not m: return await u.message.reply_text("Active match nahi mila.")
@@ -134,10 +161,10 @@ async def win(u: Update, c: ContextTypes.DEFAULT_TYPE):
     nb = set_bal(winner, prize)
     cur.execute("DELETE FROM matches WHERE id = ?", (mid,))
     conn.commit()
-    await u.message.reply_text(f"🏆 *WINNER:* @{winner}\n💰 Prize: +₹{prize}\nNew Balance: ₹{nb}", parse_mode="Markdown")
+    await u.message.reply_text(f"🏆 *WINNER:* @{winner}\nPrize: ₹{prize} credit kar diya gaya. New Bal: ₹{nb}", parse_mode="Markdown")
 
 async def qr_send(u: Update, c: ContextTypes.DEFAULT_TYPE):
-    cap = f"💳 *DEPOSIT QR*\nName: *{PAYEE_NAME}*\nUPI: `{UPI_ID}`\nScreenshot group me dalein."
+    cap = f"💳 *DEPOSIT QR*\nName: *{PAYEE_NAME}*\nUPI ID: `{UPI_ID}`\n\nPayment karke screenshot yahan bhejein."
     if os.path.exists("qr.jpg"):
         with open("qr.jpg", "rb") as p: await u.message.reply_photo(photo=p, caption=cap, parse_mode="Markdown")
     else:
@@ -159,3 +186,4 @@ if __name__ == '__main__':
         app.add_handler(CommandHandler(cmd, fn))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), text_guard))
     app.run_polling()
+    
