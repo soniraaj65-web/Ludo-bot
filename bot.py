@@ -78,7 +78,7 @@ CREATE TABLE IF NOT EXISTS meta (
     val INTEGER
 )
 """)
-# Table counter reset to 0 so the first table starts at 1
+# Force reset counter to 0 so next table is Table No. 1
 c.execute("INSERT OR REPLACE INTO meta (key, val) VALUES ('table_counter', 0)")
 db.commit()
 
@@ -132,7 +132,8 @@ def detect_mode(text):
 
 def get_clickable_mention(user):
     if user.username:
-        return f"@{user.username}"
+        clean_user = user.username.replace("@", "")
+        return f"@{clean_user}"
     safe_name = (user.first_name or "Player").replace("<", "&lt;").replace(">", "&gt;")
     return f'<a href="tg://user?id={user.id}">{safe_name}</a>'
 
@@ -191,7 +192,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = query.from_user
     user_clean = (user.username or user.first_name or "").lower().replace("@", "")
 
-    # Full details pop-up
     if query.data.startswith("details:"):
         uid = int(query.data.split(":")[1])
         c.execute("SELECT * FROM users WHERE user_id = ?", (uid,))
@@ -225,7 +225,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     amt = float(g["amount"])
     est_msg_id = g["estimate_msg_id"]
 
-    # Check Estimate Pop-up Button
     if action == "est":
         c.execute("SELECT balance FROM users WHERE user_id = ?", (g["host_id"],))
         h_bal = c.fetchone()["balance"]
@@ -239,7 +238,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Admin check
     is_admin = False
     try:
         cm = await context.bot.get_chat_member(query.message.chat_id, user.id)
@@ -255,7 +253,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("⚠️ Match pehle se settled/closed hai!", show_alert=True)
         return
 
-    # Cancel Table
     if action == "cancel":
         c.execute("SELECT balance FROM users WHERE user_id = ?", (g["host_id"],))
         h_bal = c.fetchone()["balance"]
@@ -299,7 +296,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("Table Canceled!")
         return
 
-    # Winner Declaration
     if action in ["win1", "win2"]:
         win_id = g["host_id"] if action == "win1" else g["opp_id"]
         win_name = h_name if action == "win1" else o_name
@@ -488,7 +484,7 @@ async def router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         asyncio.create_task(delayed_delete(context, chat_id, update.message.message_id, 30))
         return
 
-    # 6. TABLE MATCHING (CLICKABLE USERNAME + START FROM 1)
+    # 6. TABLE MATCHING (STRICT CLICKABLE USERNAME + START FROM 1)
     if update.message.reply_to_message:
         replied_msg = update.message.reply_to_message
 
@@ -519,13 +515,12 @@ async def router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 h_disp = get_clickable_mention(host)
                 o_disp = get_clickable_mention(opp)
 
-                # THRESHOLD LIMIT CHECK
                 if h_bal < amt or o_bal < amt:
                     h_dot = "🟢" if h_bal >= amt else "🔴"
-                   o_dot = "🟢" if o_bal >= amt else "🔴"
+                    o_dot = "🟢" if o_bal >= amt else "🔴"
 
                     fail_card = (
-                        "🔴 Failed because one of the users would have a balance below the minimum threshold (0).\n\n"
+                         "🔴 Failed because one of the users would have a balance below the minimum threshold (0).\n\n"
                         f"{h_dot} {h_disp} estimate:\n"
                         f"{h_bal:.1f} - {amt:.1f} ➔ {(h_bal - amt):.1f}\n\n"
                         f"{o_dot} {o_disp} estimate:\n"
