@@ -1,12 +1,12 @@
 import os
+import re
 import sqlite3
 import logging
 from threading import Thread
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
-    CommandHandler,
     MessageHandler,
     ChatMemberHandler,
     ContextTypes,
@@ -21,10 +21,14 @@ PAYEE_NAME = "Vikash Choudhary"
 COMMISSION_PERCENT = 10
 PORT = int(os.environ.get("PORT", 10000))
 
-# Galiyon aur spam words ki list
+GROUP_LOCKED = False
+ACTION_COUNTER = 90
+PINNED_SHEET_MSG_ID = None
+
 BAD_WORDS = [
     "mc", "bc", "bhosdike", "chutiya", "madarchod", "gandu", 
-    "lauda", "lodu", "behenchod", "harami", "bkl", "bsdk", "randi"
+    "lauda", "lodu", "behenchod", "harami", "bkl", "bsdk", "randi",
+    "chudai", "madarjat", "bhen ke lode"
 ]
 
 logging.basicConfig(level=logging.INFO)
@@ -34,7 +38,7 @@ class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Ludo Empire Bot is Running!")
+        self.wfile.write(b"Sky Table Powar Live Engine!")
 
 def run_server():
     server = HTTPServer(("0.0.0.0", PORT), SimpleHandler)
@@ -51,7 +55,10 @@ c = db.cursor()
 c.execute("""
 CREATE TABLE IF NOT EXISTS users (
     username TEXT PRIMARY KEY,
-    balance INTEGER DEFAULT 0
+    name TEXT,
+    balance REAL DEFAULT 0.0,
+    side_balance REAL DEFAULT 0.0,
+    in_match INTEGER DEFAULT 0
 )
 """)
 c.execute("""
@@ -59,24 +66,78 @@ CREATE TABLE IF NOT EXISTS games (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     host TEXT,
     opponent TEXT,
-    amount INTEGER,
+    amount REAL,
+    mode TEXT DEFAULT 'CLASSIC',
     status TEXT
 )
 """)
 db.commit()
 
-def get_user_balance(username):
+def get_user_data(username, fallback_name="Player"):
     username = username.lower().replace("@", "")
-    c.execute("SELECT balance FROM users WHERE username = ?", (username,))
+    c.execute("SELECT * FROM users WHERE username = ?", (username,))
     row = c.fetchone()
-    return row["balance"] if row else 0
+    if not row:
+        c.execute("INSERT OR REPLACE INTO users (username, name, balance, side_balance, in_match) VALUES (?, ?, 0.0, 0.0, 0)", (username, fallback_name))
+        db.commit()
+        c.execute("SELECT * FROM users WHERE username = ?", (username,))
+        row = c.fetchone()
+    return row
 
-def set_user_balance(username, bal):
+def update_user_balance(username, new_bal, name=None):
     username = username.lower().replace("@", "")
-    c.execute("INSERT OR REPLACE INTO users (username, balance) VALUES (?, ?)", (username, bal))
+    if name:
+        c.execute("UPDATE users SET balance = ?, name = ? WHERE username = ?", (float(new_bal), name, username))
+    else:
+        c.execute("UPDATE users SET balance = ? WHERE username = ?", (float(new_bal), username))
     db.commit()
 
-# ---------------- WELCOME HANDLER (NEW MEMBERS) ----------------
+def parse_amount(text):
+    k_match = re.search(r"(\d+(?:\.\d+)?)\s*k", text)
+    if k_match:
+        return float(k_match.group(1)) * 1000.0
+    num_match = re.search(r"\b(\d+)\b", text)
+    if num_match:
+        return float(num_match.group(1))
+    return None
+
+# ---------------- PINNED SHEET GENERATOR & SYNC ----------------
+def generate_sheet_text():
+    c.execute("SELECT name, username, balance FROM users WHERE balance > 0 ORDER BY balance DESC")
+    rows = c.fetchall()
+    
+    total_balance = sum(r["balance"] for r in rows)
+    
+    text = "📊 **SKY KING CLUB • LIVE BALANCE SHEET** 📊\n"
+    text += "──────────────────────────────\n"
+    
+    if not rows:
+        text += "• _Filhal sabhi accounts 0.0 par hain._\n"
+    else:
+        for idx, r in enumerate(rows, start=1):
+            disp_name = r["name"] or r["username"]
+            text += f"`{idx:02d}.` **{disp_name}** (`@{r['username']}`): **₹{r['balance']:.1f}**\n"
+            
+    text += "──────────────────────────────\n"
+    text += f"💰 **Total Club Balance:** ₹{total_balance:.1f}\n"
+    text += "🔄 _Yeh list real-time auto update hoti hai._"
+    return text
+
+async def sync_pinned_sheet(chat_id, context: ContextTypes.DEFAULT_TYPE):
+    global PINNED_SHEET_MSG_ID
+    if PINNED_SHEET_MSG_ID:
+        try:
+            sheet_content = generate_sheet_text()
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=PINNED_SHEET_MSG_ID,
+                text=sheet_content,
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logging.error(f"Error auto-updating pinned sheet: {e}")
+
+# ---------------- WELCOME HANDLER ----------------
 async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = update.chat_member
     if result.old_chat_member.status in ["left", "kicked"] and result.new_chat_member.status in ["member", "administrator"]:
@@ -84,389 +145,317 @@ async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
         mention = f"@{new_user.username}" if new_user.username else new_user.first_name
         
         welcome_text = (
-            f"👋 *WELCOME TO LUDO EMPIRE, {mention}!* 🎲\n\n"
-            "✨ *Yahan khele aur jeetein 100% safe & fast payouts ke sath!*\n\n"
-            "🎮 *Quick Commands:*\n"
-            "• `/bal` - Apna wallet balance check karein\n"
-            "• `/open <amount>` - New challenge create karein\n"
-            "• `/table` - Active matches dekhein\n"
-            "• `/qr` - Deposit scan aur UPI ID paane ke liye\n"
-            "• `/withdraw <amt> <upi>` - Payout lene ke liye\n"
-            "• `/rules` - Game ke rules padhein\n\n"
-            "💰 *Add balance karne ke liye chat mein `qr` bhejein!*"
+            f"👋 *WELCOME TO SKY KING LUDO CLUB, {mention}!* 🎲\n\n"
+            "✨ *Direct table lagane ke liye likhein:*\n"
+            "👉 `50` | `100` | `500 full` | `50 t` | `1k` | `5kff`\n\n"
+            "• Challenge par reply karke `ok` ya `lga` karein (Match Fix & Pay)\n"
+            "• Info dekhne ke liye: `info`\n"
+            "• Deposit ke liye: `qr`"
         )
         await context.bot.send_message(chat_id=update.effective_chat.id, text=welcome_text, parse_mode="Markdown")
 
-# ---------------- AUTO MODERATION & TEXT TRIGGERS ----------------
-async def auto_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
-        return
-
-    text = update.message.text.lower().strip()
-    sender = update.effective_user
-    username = f"@{sender.username}" if sender.username else sender.first_name
-    sender_clean = (sender.username or "").lower().replace("@", "")
-
-    # 1. Text Triggers (Sabke liye execute hoga, chahe user ho ya admin)
-    if text in ["qr", "payment", "scanner"]:
-        await qr_command(update, context)
-        return
-    elif text in ["bet", "open"]:
-        await update.message.reply_text("🎲 Table open karne ke liye command bhejein: `/open <amount>` (Example: `/open 50`)", parse_mode="Markdown")
-        return
-
-    # 2. Admins ko gaali/link filter bypass karne allow karein
-    if sender_clean in ADMINS:
-        return
-
-    # 3. Moderation Filters
-    words = text.split()
-    contains_bad_word = any(bad in words or bad in text for bad in BAD_WORDS)
-    contains_link = "http://" in text or "https://" in text or "t.me/" in text
-
-    if contains_bad_word:
-        try:
-            await update.message.delete()
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=f"⚠️ {username}, group me gaali ya abusive bhasha allowed nahi hai! Message deleted."
-            )
-        except Exception as e:
-            logging.error(f"Moderation error: {e}")
-        return
-
-    if contains_link:
-        try:
-            await update.message.delete()
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=f"⚠️ {username}, group me promotional links bhejna mana hai! Message deleted."
-            )
-        except Exception as e:
-            logging.error(f"Link deletion error: {e}")
-        return
-
-# ---------------- BOT HANDLERS ----------------
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = (
-        "👑 *WELCOME TO THE LUDO EMPIRE BOT* 👑\n\n"
-        "🎮 *Player Commands:*\n"
-        "• `/open <amount>` - Challenge create karo\n"
-        "• `/join @host` - Challenge accept karo\n"
-        "• `/code <room_code>` - Ludo room code bhejo\n"
-        "• `/table` - Active challenges dekho\n"
-        "• `/cancel` - Apna open challenge cancel karo\n"
-        "• `/bal` - Apna wallet balance check karo\n"
-        "• `/withdraw <amt> <upi>` - Withdrawal request lagao\n"
-        "• `/rules` - Game rules padho\n"
-        "• `/qr` - Deposit scan aur UPI ID paane ke liye\n\n"
-        "⚡ Send `qr` or `bet` anytime in chat."
-    )
-    await update.message.reply_text(msg, parse_mode="Markdown")
-
-async def rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = (
-        "📜 *LUDO RULES:*\n\n"
-        "1. Table join hone ke 5 min ke andar room code bhejna zaroori hai.\n"
-        "2. Win hone ke baad result screenshot admin ko bhejein.\n"
-        "3. Game me kisi bhi tarah ki cheating/hacks ban karwayenge.\n"
-        "4. Platform commission 10% automatically deduct hoga."
-    )
-    await update.message.reply_text(msg, parse_mode="Markdown")
-
-async def qr_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ---------------- QR HELPER ----------------
+async def send_qr_message(chat_id, context: ContextTypes.DEFAULT_TYPE, reply_to_id=None):
     caption = (
-        f"💳 *DEPOSIT PAYMENT DETAILS*\n\n"
+        f"💳 *PAYMENT QR DETAILS*\n\n"
         f"• *Name:* {PAYEE_NAME}\n"
         f"• *UPI ID:* `{UPI_ID}`\n\n"
-        f"Payment karne ke baad screenshot admin ko bhejein balance add karwane ke liye!"
+        f"Payment karke screenshot chat me bhejein!"
     )
     if os.path.exists("qr.jpg"):
         with open("qr.jpg", "rb") as p:
-            await update.message.reply_photo(photo=p, caption=caption, parse_mode="Markdown")
+            await context.bot.send_photo(chat_id=chat_id, photo=p, caption=caption, parse_mode="Markdown", reply_to_message_id=reply_to_id)
     else:
-        await update.message.reply_text(caption, parse_mode="Markdown")
+        await context.bot.send_message(chat_id=chat_id, text=caption, parse_mode="Markdown", reply_to_message_id=reply_to_id)
 
-async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    sender = update.effective_user.username
-    if not sender:
-        await update.message.reply_text("❌ Kripya Telegram par pehle apna username set karein.")
+# ---------------- MAIN ZERO-SLASH PROCESSING ENGINE ----------------
+async def zero_slash_table_power(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global GROUP_LOCKED, ACTION_COUNTER, PINNED_SHEET_MSG_ID
+    if not update.message or not update.message.text:
         return
-    bal = get_user_balance(sender)
-    await update.message.reply_text(f"💰 @{sender}, aapka balance: *₹{bal}*", parse_mode="Markdown")
 
-async def open_table(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        sender = update.effective_user.username
-        if not sender:
-            await update.message.reply_text("❌ Pehle apna Telegram username set karein.")
+    raw_text = update.message.text.strip()
+    text = raw_text.lower()
+    sender = update.effective_user
+    sender_name = sender.first_name or "Player"
+    sender_username = sender.username or sender_name
+    sender_clean = (sender.username or "").lower().replace("@", "")
+
+    clean_cmd = text.lstrip("/").strip()
+
+    # 1. PIN SHEET / MASTER LEDGER TRIGGER
+    if clean_cmd in ["pinsheet", "pin sheet", "sheet", "ledger", "balancesheet"] and sender_clean in ADMINS:
+        sheet_text = generate_sheet_text()
+        sent_msg = await update.message.reply_text(sheet_text, parse_mode="Markdown")
+        try:
+            await context.bot.pin_chat_message(
+                chat_id=update.effective_chat.id,
+                message_id=sent_msg.message_id,
+                disable_notification=True
+            )
+            PINNED_SHEET_MSG_ID = sent_msg.message_id
+            await update.message.reply_text("📌 *Balance Sheet successfully pinned! Ab yeh automatic live update hoti rahegi.*", parse_mode="Markdown")
+        except Exception as e:
+            logging.error(f"Pin message error: {e}")
+            await update.message.reply_text("⚠️ Bot ko 'Pin Messages' ki admin permission check karein!")
+        return
+
+    # 2. LOCK / UNLOCK SYSTEM (Admin)
+    if clean_cmd in ["lock", "close", "band"]:
+        if sender_clean in ADMINS:
+            GROUP_LOCKED = True
+            await update.message.reply_text("🔒 *TABLE LOCK HO GAYI HAI!* Naye matches lagana band hai.", parse_mode="Markdown")
+            return
+    elif clean_cmd in ["unlock", "open group", "chalu", "start"]:
+        if sender_clean in ADMINS:
+            GROUP_LOCKED = False
+            await update.message.reply_text("🔓 *TABLE OPEN HO GAYI HAI!* Khelna shuru kar sakte hain.", parse_mode="Markdown")
             return
 
-        sender = sender.lower().replace("@", "")
-
-        if not context.args or not context.args[0].isdigit():
-            await update.message.reply_text("⚠️ Sahi format: `/open <amount>` (Example: `/open 50`)", parse_mode="Markdown")
+    # 3. ANTI-GALI & ANTI-LINK FILTER (Admins Bypassed)
+    if sender_clean not in ADMINS:
+        words = text.split()
+        if any(bad in words or bad in text for bad in BAD_WORDS):
+            try:
+                await update.message.delete()
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text=f"⚠️ {sender_name}, abusive bhasha delete kar di gayi hai!"
+                )
+            except Exception as e:
+                logging.error(f"Moderation error: {e}")
             return
 
-        amount = int(context.args[0])
-        if amount <= 0:
-            await update.message.reply_text("❌ Amount 0 se zyada hona chahiye.")
+        if "http://" in text or "https://" in text or "t.me/" in text:
+            try:
+                await update.message.delete()
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text=f"⚠️ {sender_name}, promotional links allowed nahi hain!"
+                )
+            except Exception as e:
+                logging.error(f"Link deletion error: {e}")
             return
 
-        bal = get_user_balance(sender)
-        if bal < amount:
-            await update.message.reply_text(f"❌ Low Balance! Aapka balance ₹{bal} hai. Deposit ke liye `/qr` use karein.")
-            return
+    # 4. ADMIN REPLY BALANCE ADD (e.g. "add 1k", "+1000", "ubdet 1k", "add 50")
+    add_match = re.match(r"^(?:/)?(?:add|addbal|\+|ubdet|update bal|update)\s*(\d+(?:\.\d+)?\s*k|\d+)", text)
+    if update.message.reply_to_message and add_match and sender_clean in ADMINS:
+        replied_user = update.message.reply_to_message.from_user
+        if replied_user:
+            target_uname = replied_user.username or replied_user.first_name
+            target_name = replied_user.first_name or target_uname
+            amt = parse_amount(add_match.group(1))
+            if amt and amt > 0:
+                user_rec = get_user_data(target_uname, target_name)
+                old_bal = float(user_rec["balance"])
+                new_bal = old_bal + amt
+                update_user_balance(target_uname, new_bal, target_name)
 
-        c.execute("SELECT id FROM games WHERE host = ? AND status = 'OPEN'", (sender,))
-        if c.fetchone():
-            await update.message.reply_text("❌ Aapka ek match pehle se open hai! Pehle use `/cancel` karein.")
-            return
+                keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("💳 Full Details", callback_data="none")]])
+                msg = (
+                    f"**Balance Added ✅**\n\n"
+                    f"💳 **New Balance:** {new_bal}\n"
+                    f"👤 **User:** {target_name}\n\n"
+                    f"_changes: {old_bal} + {amt}_"
+                )
+                await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=keyboard)
+                await sync_pinned_sheet(update.effective_chat.id, context)
+                return
 
-        c.execute("INSERT INTO games (host, amount, status) VALUES (?, ?, 'OPEN')", (sender, amount))
-        db.commit()
+    # 5. ADMIN REPLY BALANCE CUT (e.g. "cut 500", "-500", "cut 50")
+    cut_match = re.match(r"^(?:/)?(?:cut|cutbal|-)\s*(\d+(?:\.\d+)?\s*k|\d+)", text)
+    if update.message.reply_to_message and cut_match and sender_clean in ADMINS:
+        replied_user = update.message.reply_to_message.from_user
+        if replied_user:
+            target_uname = replied_user.username or replied_user.first_name
+            target_name = replied_user.first_name or target_uname
+            amt = parse_amount(cut_match.group(1))
+            if amt and amt > 0:
+                user_rec = get_user_data(target_uname, target_name)
+                old_bal = float(user_rec["balance"])
+                new_bal = max(0.0, old_bal - amt)
+                update_user_balance(target_uname, new_bal, target_name)
 
-        await update.message.reply_text(
-            f"🎲 *TABLE OPENED*\n\nHost: @{sender}\nAmount: *₹{amount}*\n\nJoin karne ke liye: `/join @{sender}`",
-            parse_mode="Markdown"
+                keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("💳 Full Details", callback_data="none")]])
+                msg = (
+                    f"**Balance Deducted ✂️**\n\n"
+                    f"💳 **New Balance:** {new_bal}\n"
+                    f"👤 **User:** {target_name}\n\n"
+                    f"_changes: {old_bal} - {amt}_"
+                )
+                await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=keyboard)
+                await sync_pinned_sheet(update.effective_chat.id, context)
+                return
+
+    # 6. USER INFO CARD (e.g. "info", "bal")
+    if clean_cmd in ["info", "bal", "balance", "mybal", "profile", "passbook"]:
+        user_rec = get_user_data(sender_username, sender_name)
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("💳 Full Details", callback_data="none")]])
+        msg = (
+            f"💰 **{user_rec['name']}'s INFO:**\n\n"
+            f"💳 **Balance :** {user_rec['balance']}\n"
+            f"📕 **Side Balance:** {user_rec['side_balance']}\n"
+            f"⏳ **In-Match:** {'True' if user_rec['in_match'] else 'False'}"
         )
-    except Exception as e:
-        logging.error(f"Error in open_table: {e}")
-        await update.message.reply_text("⚠️ Match create karte waqt error aaya.")
-
-async def cancel_table(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    sender = update.effective_user.username
-    if not sender:
+        await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=keyboard)
         return
-    sender = sender.lower().replace("@", "")
-    c.execute("SELECT id FROM games WHERE host = ? AND status = 'OPEN'", (sender,))
-    row = c.fetchone()
-    if row:
-        c.execute("DELETE FROM games WHERE id = ?", (row["id"],))
-        db.commit()
-        await update.message.reply_text(f"✅ @{sender}, aapka open challenge cancel kar diya gaya hai.")
-    else:
-        await update.message.reply_text("❌ Aapka koi open challenge nahi mila.")
 
-async def join_table(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        sender = update.effective_user.username
-        if not sender:
-            await update.message.reply_text("❌ Pehle apna Telegram username set karein.")
+    # 7. DIRECT QR & PAYMENT TRIGGERS
+    if clean_cmd in ["qr", "payment", "scanner", "pay", "upi", "paisa"]:
+        await send_qr_message(update.effective_chat.id, context, update.message.message_id)
+        return
+
+    # 8. CANCEL OPEN CHALLENGE
+    if clean_cmd in ["cancel", "delete", "hatao", "back"]:
+        c.execute("SELECT id FROM games WHERE host = ? AND status = 'OPEN'", (sender_clean,))
+        row = c.fetchone()
+        if row:
+            c.execute("DELETE FROM games WHERE id = ?", (row["id"],))
+            db.commit()
+            await update.message.reply_text(f"✅ @{sender_clean}, open challenge cancel kar diya gaya.")
+        return
+
+    # 9. DIRECT WITHDRAWAL (e.g. "wd 500 upi@id" / "withdraw 100 name@okaxis")
+    wd_match = re.match(r"^(?:/)?(?:withdraw|wd|nikalo)\s+(\d+)\s+([a-zA-Z0-9.\-_+@]+)$", text)
+    if wd_match:
+        amt = float(wd_match.group(1))
+        upi_id = wd_match.group(2)
+        user_rec = get_user_data(sender_username, sender_name)
+        if user_rec["balance"] < amt:
+            await update.message.reply_text(f"❌ Low Balance! Aapka balance ₹{user_rec['balance']} hai.")
             return
 
-        sender = sender.lower().replace("@", "")
+        update_user_balance(sender_username, user_rec["balance"] - amt)
+        await sync_pinned_sheet(update.effective_chat.id, context)
 
-        if not context.args:
-            await update.message.reply_text("⚠️ Sahi format: `/join @host_username`", parse_mode="Markdown")
-            return
+        msg = (
+            f"🔔 **WITHDRAWAL REQUEST**\n\n"
+            f"• User: @{sender_username}\n"
+            f"• Amount: ₹{amt}\n"
+            f"• UPI ID: `{upi_id}`\n\n"
+            f"Admin verify karke transfer bhej denge! ✅"
+        )
+        await update.message.reply_text(msg, parse_mode="Markdown")
+        return
 
-        host = context.args[0].lower().replace("@", "")
-
-        if host == sender:
-            await update.message.reply_text("❌ Aap apna khud ka match join nahi kar sakte.")
-            return
-
-        c.execute("SELECT * FROM games WHERE host = ? AND status = 'OPEN'", (host,))
+    # 10. LUDO KING ROOM CODE DETECTION (8-digit number)
+    code_match = re.search(r"\b\d{8}\b", text)
+    if code_match or clean_cmd.startswith("code "):
+        code_val = code_match.group(0) if code_match else clean_cmd.replace("code", "").strip()
+        c.execute("SELECT * FROM games WHERE (host = ? OR opponent = ?) AND status = 'PLAYING'", (sender_clean, sender_clean))
         game = c.fetchone()
-
-        if not game:
-            await update.message.reply_text("❌ Yeh table exist nahi karti ya match start ho chuka hai.")
+        if game:
+            await update.message.reply_text(
+                f"🎮 **LUDO ROOM CODE:** `{code_val}`\n\nPlayers: @{game['host']} VS @{game['opponent']}\nMatch start karein! 🎲",
+                parse_mode="Markdown"
+            )
             return
 
-        amt = game["amount"]
-        if get_user_balance(sender) < amt:
-            await update.message.reply_text(f"❌ Low balance! Is table ke liye ₹{amt} balance chahiye.")
+    # 11. REPLY TO ACCEPT & FIX MATCH ("ok", "lga", "lagao", "play", "done")
+    accept_keywords = ["ok", "lga", "lagao", "done", "play", "khelna", "ao", "aao", "yes", "set", "khelo"]
+    if update.message.reply_to_message and clean_cmd in accept_keywords:
+        if GROUP_LOCKED:
+            await update.message.reply_text("🔒 Group currently locked hai.")
             return
 
-        if get_user_balance(host) < amt:
-            await update.message.reply_text("❌ Host ke wallet me sufficient balance nahi hai.")
+        replied_user = update.message.reply_to_message.from_user
+        if not replied_user:
             return
 
-        set_user_balance(host, get_user_balance(host) - amt)
-        set_user_balance(sender, get_user_balance(sender) - amt)
+        host_uname = replied_user.username or replied_user.first_name
+        host_name = replied_user.first_name or host_uname
+        opp_uname = sender_username
+        opp_name = sender_name
 
-        c.execute("UPDATE games SET opponent = ?, status = 'PLAYING' WHERE id = ?", (sender, game["id"]))
+        if host_uname.lower() == opp_uname.lower():
+            await update.message.reply_text("❌ Khud ke challenge par match fix nahi kar sakte.")
+            return
+
+        amt = parse_amount(update.message.reply_to_message.text or "") or 50.0
+
+        host_rec = get_user_data(host_uname, host_name)
+        opp_rec = get_user_data(opp_uname, opp_name)
+
+        ACTION_COUNTER += 1
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Check Estimate", callback_data="none")]])
+
+        msg = (
+            f"@{host_uname} @{opp_uname}\n"
+            f"{int(amt)}✅\n\n"
+            f"**Action #{ACTION_COUNTER} successful! ✅**\n\n"
+            f"🔴 **{host_name} estimate:**\n"
+            f"{host_rec['balance']} - {amt} ➔ {host_rec['balance'] - amt}\n\n"
+            f"🟢 **{opp_name} estimate:**\n"
+            f"{opp_rec['balance']} - {amt} ➔ {opp_rec['balance'] - amt}"
+        )
+
+        c.execute("INSERT INTO games (host, opponent, amount, status) VALUES (?, ?, ?, 'PLAYING')", (host_uname, opp_uname, amt))
+        c.execute("UPDATE users SET in_match = 1 WHERE username IN (?, ?)", (host_uname.lower(), opp_uname.lower()))
         db.commit()
 
-        msg = (
-            f"⚔️ *MATCH STARTED!*\n\n"
-            f"Host: @{host}\n"
-            f"Opponent: @{sender}\n"
-            f"Amount: ₹{amt} each (Total Pot: ₹{amt * 2})\n\n"
-            f"Host @{host}, please create Ludo King room and send: `/code <room_code>`"
-        )
-        await update.message.reply_text(msg, parse_mode="Markdown")
-    except Exception as e:
-        logging.error(f"Error in join_table: {e}")
-        await update.message.reply_text("⚠️ Join karte waqt error aaya.")
-
-async def send_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    sender = update.effective_user.username
-    if not sender or not context.args:
-        await update.message.reply_text("⚠️ Sahi format: `/code <room_code>`")
+        await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=keyboard)
         return
 
-    sender = sender.lower().replace("@", "")
-    code = context.args[0]
+    # 12. WINNER RESULT VIA REPLY ("win", "winner", "ss")
+    if update.message.reply_to_message and clean_cmd in ["win", "winner", "ss", "loss"] and sender_clean in ADMINS:
+        replied_user = update.message.reply_to_message.from_user
+        if replied_user:
+            target_uname = replied_user.username or replied_user.first_name
+            c.execute("SELECT * FROM games WHERE (host = ? OR opponent = ?) AND status = 'PLAYING'", (target_uname, target_uname))
+            game = c.fetchone()
+            if game:
+                tot_pot = game["amount"] * 2.0
+                commission = tot_pot * (COMMISSION_PERCENT / 100.0)
+                win_amt = tot_pot - commission
 
-    c.execute("SELECT * FROM games WHERE host = ? AND status = 'PLAYING'", (sender,))
-    game = c.fetchone()
-    if game:
-        await update.message.reply_text(
-            f"🎮 *LUDO ROOM CODE:*\n`{code}`\n\nPlayers: @{game['host']} VS @{game['opponent']}\nEnjoy the match!",
-            parse_mode="Markdown"
-        )
-    else:
-        await update.message.reply_text("❌ Aapka koi running match nahi mila.")
+                user_rec = get_user_data(target_uname)
+                new_bal = user_rec["balance"] + win_amt
+                update_user_balance(target_uname, new_bal)
 
-async def view_tables(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    c.execute("SELECT * FROM games WHERE status = 'OPEN'")
-    rows = c.fetchall()
-    if not rows:
-        await update.message.reply_text("📋 Abhi koi open table nahi hai. Naya create karne ke liye `/open <amount>` likhein.")
-        return
+                c.execute("DELETE FROM games WHERE id = ?", (game["id"],))
+                c.execute("UPDATE users SET in_match = 0 WHERE username IN (?, ?)", (game["host"], game["opponent"]))
+                db.commit()
 
-    text = "📋 *ACTIVE TABLES:*\n\n"
-    for r in rows:
-        text += f"• Host: @{r['host']} | Entry: ₹{r['amount']} ➔ `/join @{r['host']}`\n"
-    await update.message.reply_text(text, parse_mode="Markdown")
+                await update.message.reply_text(
+                    f"🏆 **WINNER CONFIRMED!**\n\n"
+                    f"Winner: @{target_uname}\n"
+                    f"Pot: ₹{tot_pot}\n"
+                    f"Credited: **₹{win_amt}** (10% Commission Cut) ✅"
+                )
+                await sync_pinned_sheet(update.effective_chat.id, context)
+                return
 
-# ---------------- WITHDRAWAL SYSTEM ----------------
+    # 13. UNIVERSAL NATURAL MARKET CHALLENGE HIT ENGINE
+    # Matches: 50, 100, 500, 500 full, 50 t, 1k, 5kff, 2k quick, 5k full 500+++, etc.
+    bet_pattern = re.search(r"\b(\d+(?:\.\d+)?)\s*(k)?\s*(full|classic|timer|quick|fast|t|ff|f)?\b", text)
+    if bet_pattern:
+        val = float(bet_pattern.group(1))
+        is_k = bet_pattern.group(2)
+        tag = (bet_pattern.group(3) or "").lower()
 
-async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        sender = update.effective_user.username
-        if not sender:
-            await update.message.reply_text("❌ Pehle apna Telegram username set karein.")
+        amt = val * 1000.0 if is_k else val
+
+        if amt >= 10.0:
+            if GROUP_LOCKED:
+                await update.message.reply_text("🔒 Group currently locked hai.")
+                return
+
+            mode = "TIMER" if tag in ["t", "timer", "quick", "fast"] else "FULL"
+
+            c.execute("INSERT INTO games (host, amount, mode, status) VALUES (?, ?, ?, 'OPEN')", (sender_clean, amt, mode))
+            db.commit()
+
+            await update.message.reply_text(
+                f"🎲 **TABLE OPENED ({mode})**\n\n"
+                f"👤 Host: @{sender_clean}\n"
+                f"💰 Amount: **₹{int(amt) if amt.is_integer() else amt}**\n\n"
+                f"👉 Khelne ke liye reply karein: `ok` ya `lga`"
+            )
             return
-
-        sender_clean = sender.lower().replace("@", "")
-
-        if len(context.args) < 2 or not context.args[0].isdigit():
-            await update.message.reply_text("⚠️ Sahi format: `/withdraw <amount> <upi_id>`\nExample: `/withdraw 100 name@okaxis`", parse_mode="Markdown")
-            return
-
-        amount = int(context.args[0])
-        upi_id = context.args[1]
-
-        if amount < 50:
-            await update.message.reply_text("❌ Minimum withdrawal amount ₹50 hai.")
-            return
-
-        current_bal = get_user_balance(sender_clean)
-        if current_bal < amount:
-            await update.message.reply_text(f"❌ Low Balance! Aapka balance ₹{current_bal} hai.")
-            return
-
-        # Wallet se balance deduct/hold karo
-        set_user_balance(sender_clean, current_bal - amount)
-
-        msg = (
-            f"🔔 *WITHDRAWAL REQUEST RECEIVED*\n\n"
-            f"• *User:* @{sender_clean}\n"
-            f"• *Amount:* ₹{amount}\n"
-            f"• *UPI ID:* `{upi_id}`\n"
-            f"• *Remaining Balance:* ₹{current_bal - amount}\n\n"
-            f"Admin verify karke jald payment bhej denge! ✅"
-        )
-        await update.message.reply_text(msg, parse_mode="Markdown")
-
-    except Exception as e:
-        logging.error(f"Error in withdraw: {e}")
-        await update.message.reply_text("⚠️ Withdrawal process karne mein error aaya.")
-
-# ---------------- ADMIN COMMANDS ----------------
-
-async def add_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    sender = (update.effective_user.username or "").lower().replace("@", "")
-    if sender not in ADMINS:
-        return
-
-    if len(context.args) < 2 or not context.args[1].isdigit():
-        await update.message.reply_text("⚠️ Format: `/addbal @username <amount>`")
-        return
-
-    target = context.args[0].lower().replace("@", "")
-    amount = int(context.args[1])
-    current = get_user_balance(target)
-    set_user_balance(target, current + amount)
-
-    await update.message.reply_text(f"✅ @{target} ke wallet mein ₹{amount} add ho gaye! Naya Balance: ₹{current + amount}")
-
-async def cut_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    sender = (update.effective_user.username or "").lower().replace("@", "")
-    if sender not in ADMINS:
-        return
-
-    if len(context.args) < 2 or not context.args[1].isdigit():
-        await update.message.reply_text("⚠️ Format: `/cutbal @username <amount>`")
-        return
-
-    target = context.args[0].lower().replace("@", "")
-    amount = int(context.args[1])
-    current = get_user_balance(target)
-    new_bal = max(0, current - amount)
-    set_user_balance(target, new_bal)
-
-    await update.message.reply_text(f"✂️ @{target} ke wallet se ₹{amount} cut ho gaye. Naya Balance: ₹{new_bal}")
-
-async def winner(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    sender = (update.effective_user.username or "").lower().replace("@", "")
-    if sender not in ADMINS:
-        return
-
-    if not context.args:
-        await update.message.reply_text("⚠️ Format: `/win @winner_username`")
-        return
-
-    target = context.args[0].lower().replace("@", "")
-
-    c.execute("SELECT * FROM games WHERE (host = ? OR opponent = ?) AND status = 'PLAYING'", (target, target))
-    game = c.fetchone()
-    if not game:
-        await update.message.reply_text("❌ Is user ka koi running match nahi mila.")
-        return
-
-    tot_pot = game["amount"] * 2
-    commission = int(tot_pot * (COMMISSION_PERCENT / 100))
-    winning_amount = tot_pot - commission
-
-    current = get_user_balance(target)
-    set_user_balance(target, current + winning_amount)
-
-    c.execute("DELETE FROM games WHERE id = ?", (game["id"],))
-    db.commit()
-
-    msg = (
-        f"🏆 *WINNER DECLARED!*\n\n"
-        f"Winner: @{target}\n"
-        f"Pot: ₹{tot_pot}\n"
-        f"Commission: ₹{commission} (10%)\n"
-        f"Winning Credited: *₹{winning_amount}* ✅"
-    )
-    await update.message.reply_text(msg, parse_mode="Markdown")
-
-async def wallet_sheet(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    sender = (update.effective_user.username or "").lower().replace("@", "")
-    if sender not in ADMINS:
-        return
-
-    c.execute("SELECT username, balance FROM users WHERE balance > 0")
-    rows = c.fetchall()
-    if not rows:
-        await update.message.reply_text("📊 Abhi kisi user ka balance add nahi hai.")
-        return
-
-    text = "📊 *USER BALANCES:*\n\n"
-    for r in rows:
-        text += f"• @{r['username']}: ₹{r['balance']}\n"
-    await update.message.reply_text(text, parse_mode="Markdown")
 
 # Global Error Handler
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logging.error(msg="Exception while handling an update:", exc_info=context.error)
+    logging.error(msg="Exception while handling update:", exc_info=context.error)
 
 # ---------------- MAIN FUNCTION ----------------
 def main():
@@ -474,33 +463,14 @@ def main():
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Welcome new chat members
     app.add_handler(ChatMemberHandler(welcome_new_member, ChatMemberHandler.CHAT_MEMBER))
-
-    # Command Handlers
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("rules", rules))
-    app.add_handler(CommandHandler("qr", qr_command))
-    app.add_handler(CommandHandler("bal", balance))
-    app.add_handler(CommandHandler("open", open_table))
-    app.add_handler(CommandHandler("cancel", cancel_table))
-    app.add_handler(CommandHandler("join", join_table))
-    app.add_handler(CommandHandler("code", send_code))
-    app.add_handler(CommandHandler("table", view_tables))
-    app.add_handler(CommandHandler("withdraw", withdraw))
-    app.add_handler(CommandHandler("addbal", add_balance))
-    app.add_handler(CommandHandler("cutbal", cut_balance))
-    app.add_handler(CommandHandler("win", winner))
-    app.add_handler(CommandHandler("sheet", wallet_sheet))
-
-    # Auto-Moderation & Triggers
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), auto_moderation))
+    app.add_handler(MessageHandler(filters.TEXT, zero_slash_table_power))
+    app.add_handler(MessageHandler(filters.PHOTO, zero_slash_table_power))
 
     app.add_error_handler(error_handler)
 
-    logging.info("Bot is starting polling...")
+    logging.info("Zero-Slash Engine with Pinned Sheet Active...")
     app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
-        
