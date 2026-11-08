@@ -28,7 +28,7 @@ LAST_ACTIVE_ESTIMATE_MSG_ID = None
 
 logging.basicConfig(level=logging.INFO)
 
-# ---------------- RENDER 24/7 DUMMY SERVER ----------------
+# ---------------- 24/7 DUMMY SERVER FOR RENDER ----------------
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -78,8 +78,8 @@ CREATE TABLE IF NOT EXISTS meta (
     val INTEGER
 )
 """)
-# Force reset counter to 0 so next table is Table No. 1
-c.execute("INSERT OR REPLACE INTO meta (key, val) VALUES ('table_counter', 0)")
+# Counter 0 se start rahega taaki agla match 1 bane
+c.execute("INSERT OR IGNORE INTO meta (key, val) VALUES ('table_counter', 0)")
 db.commit()
 
 def get_next_counter(key_name):
@@ -109,6 +109,11 @@ def get_or_create_user(user):
         db.commit()
     return row
 
+def get_user_by_username(uname_raw):
+    clean = uname_raw.lower().replace("@", "").strip()
+    c.execute("SELECT * FROM users WHERE LOWER(username) = ?", (clean,))
+    return c.fetchone()
+
 def update_bal(user_id, new_bal):
     c.execute("UPDATE users SET balance = ? WHERE user_id = ?", (float(new_bal), user_id))
     db.commit()
@@ -130,12 +135,21 @@ def detect_mode(text):
         return "Timer"
     return "full"
 
-def get_clickable_mention(user):
-    if user.username:
-        clean_user = user.username.replace("@", "")
-        return f"@{clean_user}"
-    safe_name = (user.first_name or "Player").replace("<", "&lt;").replace(">", "&gt;")
-    return f'<a href="tg://user?id={user.id}">{safe_name}</a>'
+def get_clickable_mention(user_or_row):
+    if isinstance(user_or_row, sqlite3.Row) or isinstance(user_or_row, dict):
+        uname = user_or_row["username"]
+        uid = user_or_row["user_id"]
+        fname = user_or_row["name"]
+    else:
+        uname = user_or_row.username
+        uid = user_or_row.id
+        fname = user_or_row.first_name or "Player"
+
+    if uname:
+        clean = uname.replace("@", "")
+        return f"@{clean}"
+    safe_name = (fname or "Player").replace("<", "&lt;").replace(">", "&gt;")
+    return f'<a href="tg://user?id={uid}">{safe_name}</a>'
 
 async def safe_delete(context: ContextTypes.DEFAULT_TYPE, chat_id, message_id):
     try:
@@ -253,6 +267,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("⚠️ Match pehle se settled/closed hai!", show_alert=True)
         return
 
+    # Cancel Match
     if action == "cancel":
         c.execute("SELECT balance FROM users WHERE user_id = ?", (g["host_id"],))
         h_bal = c.fetchone()["balance"]
@@ -296,6 +311,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("Table Canceled!")
         return
 
+    # Settle Winner
     if action in ["win1", "win2"]:
         win_id = g["host_id"] if action == "win1" else g["opp_id"]
         win_name = h_name if action == "win1" else o_name
@@ -351,7 +367,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("Winner Declared!")
         return
 
-# ---------------- PHOTO HANDLER (ROSE QR AUTO-DELETE IN 1 MIN) ----------------
+# ---------------- PHOTO HANDLER (ROSE QR AUTO-DELETE 60s) ----------------
 async def photo_cleaner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.photo:
         return
@@ -368,9 +384,106 @@ async def photo_cleaner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_rose_or_qr:
         asyncio.create_task(delayed_delete(context, chat_id, msg_id, 60))
 
+# ---------------- HELPER: CREATE AND POST TABLE ----------------
+async def build_and_post_table(context: ContextTypes.DEFAULT_TYPE, chat_id, host_data, opp_data, amt, mode, clean_msg_ids):
+    global LAST_ACTIVE_TABLE_MSG_ID, LAST_ACTIVE_ESTIMATE_MSG_ID
+
+    h_id = host_data["user_id"] if isinstance(host_data, (sqlite3.Row, dict)) else host_data.id
+    o_id = opp_data["user_id"] if isinstance(opp_data, (sqlite3.Row, dict)) else opp_data.id
+
+    c.execute("SELECT balance FROM users WHERE user_id = ?", (h_id,))
+    h_bal = float(c.fetchone()["balance"])
+    c.execute("SELECT balance FROM users WHERE user_id = ?", (o_id,))
+    o_bal = float(c.fetchone()["balance"])
+
+    h_disp = get_clickable_mention(host_data)
+    o_disp = get_clickable_mention(opp_data)
+
+    # THRESHOLD CHECK
+    if h_bal < amt or o_bal < amt:
+        h_dot = "🟢" if h_bal >= amt else "🔴"
+        o_dot = "🟢" if o_bal >= amt else "🔴"
+
+        fail_card = (
+            "🔴 Failed because one of the users would have a balance below the minimum threshold (0).\n\n"
+            f"{h_dot} {h_disp} estimate:\n"
+            f"{h_bal:.1f} - {amt:.1f} ➔ {(h_bal - amt):.1f}\n\n"
+            f"{o_dot} {o_disp} estimate:\n"
+            f"{o_bal:.1f} - {amt:.1f} ➔ {(o_bal - amt):.1f}"
+        )
+        err = await context.bot.send_message(chat_id=chat_id, text=fail_card, parse_mode=ParseMode.HTML)
+        asyncio.create_task(delayed_delete(context, chat_id, err.message_id, 25))
+        return
+
+    # Deduct Stakes
+    new_h_bal = h_bal - amt
+    new_o_bal = o_bal - amt
+    update_bal(h_id, new_h_bal)
+    update_bal(o_id, new_o_bal)
+
+    t_num = get_next_counter("table_counter")
+
+    # Smooth Multi-Step Animation Loader
+    loader_msg = await context.bot.send_message(chat_id=chat_id, text="🎲 Rolling dice . . .")
+    await asyncio.sleep(0.5)
+    try:
+        await context.bot.edit_message_text(chat_id=chat_id, message_id=loader_msg.message_id, text="⏳ Generating Match Slip . . .")
+    except Exception:
+        pass
+    await asyncio.sleep(0.5)
+
+    c.execute("INSERT INTO games (table_no, host_id, host_name, opp_id, opp_name, amount, mode, status, estimate_msg_id, chat_id) VALUES (?, ?, ?, ?, ?, ?, ?, 'PLAYING', NULL, ?)",
+              (t_num, h_id, h_disp, o_id, o_disp, amt, mode, chat_id))
+    gid = c.lastrowid
+    c.execute("UPDATE users SET in_match = 1 WHERE user_id IN (?, ?)", (h_id, o_id))
+    db.commit()
+
+    card1_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🛑 Cancel This Table", callback_data=f"cancel:{gid}")],
+        [
+            InlineKeyboardButton("🏆 #1 Won...", callback_data=f"win1:{gid}"),
+            InlineKeyboardButton("🏆 #2 Won...", callback_data=f"win2:{gid}")
+        ]
+    ])
+    card1_text = (
+        f"🎲 Table No. {t_num}\n\n"
+        f"(1). {h_disp}\n\n"
+        f"(2). {o_disp}\n\n"
+        f"{int(amt)} ✅ {mode}"
+    )
+
+    card2_kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Check Estimate", callback_data=f"est:{gid}")]])
+    card2_text = (
+        f"Action #{t_num} successful! ✅\n\n"
+        f"🟢 {h_disp} estimate:\n"
+        f"{h_bal:.1f} - {amt:.1f} ➔ {new_h_bal:.1f}\n\n"
+        f"🟢 {o_disp} estimate:\n"
+        f"{o_bal:.1f} - {amt:.1f} ➔ {new_o_bal:.1f}"
+    )
+
+    await safe_delete(context, chat_id, loader_msg.message_id)
+
+    if LAST_ACTIVE_TABLE_MSG_ID:
+        asyncio.create_task(delayed_delete(context, chat_id, LAST_ACTIVE_TABLE_MSG_ID, 30))
+    if LAST_ACTIVE_ESTIMATE_MSG_ID:
+        asyncio.create_task(delayed_delete(context, chat_id, LAST_ACTIVE_ESTIMATE_MSG_ID, 30))
+
+    sent_card1 = await context.bot.send_message(chat_id=chat_id, text=card1_text, reply_markup=card1_kb, parse_mode=ParseMode.HTML)
+    LAST_ACTIVE_TABLE_MSG_ID = sent_card1.message_id
+
+    sent_card2 = await context.bot.send_message(chat_id=chat_id, text=card2_text, reply_markup=card2_kb, parse_mode=ParseMode.HTML)
+    LAST_ACTIVE_ESTIMATE_MSG_ID = sent_card2.message_id
+
+    c.execute("UPDATE games SET estimate_msg_id = ? WHERE id = ?", (sent_card2.message_id, gid))
+    db.commit()
+
+    for mid in clean_msg_ids:
+        asyncio.create_task(delayed_delete(context, chat_id, mid, 30))
+    await sync_sheet(chat_id, context)
+
 # ---------------- MAIN ROUTER ----------------
 async def router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global PINNED_SHEET_MSG_ID, LAST_ACTIVE_TABLE_MSG_ID, LAST_ACTIVE_ESTIMATE_MSG_ID
+    global PINNED_SHEET_MSG_ID
     if not update.message or not update.message.text:
         return
 
@@ -421,7 +534,7 @@ async def router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.reply_to_message and add_match and is_admin:
         target = update.message.reply_to_message.from_user
         if target:
-            amt = parse_amount(add_match.group(1))
+             amt = parse_amount(add_match.group(1))
             if amt:
                 user_row = get_or_create_user(target)
                 old_bal = float(user_row["balance"])
@@ -441,8 +554,8 @@ async def router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 asyncio.create_task(delayed_delete(context, chat_id, sent.message_id, 60))
                 return
 
-    # 4. BALANCE MINUS / WITHDRAW
-    cut_match = re.match(r"^(?:cut|cutbal|-|debit|w|wd|withdraw)\s*(\d+(?:\.\d+)?\s*k|\d+)", text)
+    # 4. BALANCE MINUS / WITHDRAW (w, withdrawal, payout, cut)
+    cut_match = re.match(r"^(?:cut|cutbal|-|debit|w|wd|withdraw|withdrawal|payout)\s*(\d+(?:\.\d+)?\s*k|\d+)", text)
     if update.message.reply_to_message and cut_match and is_admin:
         target = update.message.reply_to_message.from_user
         if target:
@@ -484,114 +597,35 @@ async def router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         asyncio.create_task(delayed_delete(context, chat_id, update.message.message_id, 30))
         return
 
-    # 6. TABLE MATCHING (STRICT CLICKABLE USERNAME + START FROM 1)
-    if update.message.reply_to_message:
-        replied_msg = update.message.reply_to_message
-
-        admin_confirm = is_admin and ("✅" in raw or "full" in text)
-        amt_from_admin = parse_amount(raw)
-
-        amt_from_replied = parse_amount(replied_msg.text or "")
-        accept_words = {"t", "l", "k", "ok", "lga", "lagao", "play", "done", "yes", "ha", "haa", "accept"}
-        words = set(re.findall(r"\b\w+\b", text))
-        user_accept = bool(words.intersection(accept_words)) or (text.strip() in accept_words)
-
-        if (admin_confirm and amt_from_admin) or (user_accept and amt_from_replied):
-            amt = amt_from_admin if admin_confirm else amt_from_replied
-            if amt and amt >= 10.0:
-                host = replied_msg.from_user
-                opp = sender
-
-                if not host or host.id == opp.id:
-                    return
-
-                h_rec = get_or_create_user(host)
-                o_rec = get_or_create_user(opp)
-
-                h_bal = float(h_rec["balance"])
-                o_bal = float(o_rec["balance"])
-
-                # Clickable usernames/mentions
-                h_disp = get_clickable_mention(host)
-                o_disp = get_clickable_mention(opp)
-
-                if h_bal < amt or o_bal < amt:
-                    h_dot = "🟢" if h_bal >= amt else "🔴"
-                    o_dot = "🟢" if o_bal >= amt else "🔴"
-
-                    fail_card = (
-                         "🔴 Failed because one of the users would have a balance below the minimum threshold (0).\n\n"
-                        f"{h_dot} {h_disp} estimate:\n"
-                        f"{h_bal:.1f} - {amt:.1f} ➔ {(h_bal - amt):.1f}\n\n"
-                        f"{o_dot} {o_disp} estimate:\n"
-                        f"{o_bal:.1f} - {amt:.1f} ➔ {(o_bal - amt):.1f}"
-                    )
-                    err = await update.message.reply_text(fail_card, parse_mode=ParseMode.HTML)
-                    asyncio.create_task(delayed_delete(context, chat_id, err.message_id, 25))
-                    return
-
-                # Deduct Stakes
-                new_h_bal = h_bal - amt
-                new_o_bal = o_bal - amt
-                update_bal(host.id, new_h_bal)
-                update_bal(opp.id, new_o_bal)
-
-                t_num = get_next_counter("table_counter")
-                mode = detect_mode(replied_msg.text or raw)
-
-                loader_msg = await update.message.reply_text("⏳ Creating Table . . .")
-
-                c.execute("INSERT INTO games (table_no, host_id, host_name, opp_id, opp_name, amount, mode, status, estimate_msg_id, chat_id) VALUES (?, ?, ?, ?, ?, ?, ?, 'PLAYING', NULL, ?)",
-                          (t_num, host.id, h_disp, opp.id, o_disp, amt, mode, chat_id))
-                gid = c.lastrowid
-                c.execute("UPDATE users SET in_match = 1 WHERE user_id IN (?, ?)", (host.id, opp.id))
-                db.commit()
-
-                # CARD 1: TABLE MASTER CARD
-                card1_kb = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🛑 Cancel This Table", callback_data=f"cancel:{gid}")],
-                    [
-                        InlineKeyboardButton("🏆 #1 Won...", callback_data=f"win1:{gid}"),
-                        InlineKeyboardButton("🏆 #2 Won...", callback_data=f"win2:{gid}")
-                    ]
-                ])
-                card1_text = (
-                    f"🎲 Table No. {t_num}\n\n"
-                    f"(1). {h_disp}\n\n"
-                    f"(2). {o_disp}\n\n"
-                    f"{int(amt)} ✅ {mode}"
-                )
-
-                # CARD 2: ACTION ESTIMATE CARD
-                card2_kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Check Estimate", callback_data=f"est:{gid}")]])
-                card2_text = (
-                    f"Action #{t_num} successful! ✅\n\n"
-                    f"🟢 {h_disp} estimate:\n"
-                    f"{h_bal:.1f} - {amt:.1f} ➔ {new_h_bal:.1f}\n\n"
-                    f"🟢 {o_disp} estimate:\n"
-                    f"{o_bal:.1f} - {amt:.1f} ➔ {new_o_bal:.1f}"
-                )
-
-                await safe_delete(context, chat_id, loader_msg.message_id)
-
-                if LAST_ACTIVE_TABLE_MSG_ID:
-                    asyncio.create_task(delayed_delete(context, chat_id, LAST_ACTIVE_TABLE_MSG_ID, 30))
-                if LAST_ACTIVE_ESTIMATE_MSG_ID:
-                    asyncio.create_task(delayed_delete(context, chat_id, LAST_ACTIVE_ESTIMATE_MSG_ID, 30))
-
-                sent_card1 = await update.message.reply_text(card1_text, reply_markup=card1_kb, parse_mode=ParseMode.HTML)
-                LAST_ACTIVE_TABLE_MSG_ID = sent_card1.message_id
-
-                sent_card2 = await context.bot.send_message(chat_id=chat_id, text=card2_text, reply_markup=card2_kb, parse_mode=ParseMode.HTML)
-                LAST_ACTIVE_ESTIMATE_MSG_ID = sent_card2.message_id
-
-                c.execute("UPDATE games SET estimate_msg_id = ? WHERE id = ?", (sent_card2.message_id, gid))
-                db.commit()
-
-                asyncio.create_task(delayed_delete(context, chat_id, replied_msg.message_id, 30))
-                asyncio.create_task(delayed_delete(context, chat_id, update.message.message_id, 30))
-                await sync_sheet(chat_id, context)
+    # 6. TABLE CREATION - STRICT ADMIN CONTROL
+    # Form 1: Admin Direct Command: "@user1 @user2 play 200" ya "play @user1 @user2 200"
+    if is_admin and ("play" in text or "table" in text or "lga" in text):
+        mentions = re.findall(r"@([a-zA-Z0-9_]+)", raw)
+        amt = parse_amount(raw)
+        if len(mentions) >= 2 and amt and amt >= 10.0:
+            u1 = get_user_by_username(mentions[0])
+            u2 = get_user_by_username(mentions[1])
+            if u1 and u2 and u1["user_id"] != u2["user_id"]:
+                mode = detect_mode(raw)
+                await build_and_post_table(context, chat_id, u1, u2, amt, mode, [update.message.message_id])
                 return
+
+    # Form 2: Admin Swipe-Reply Confirmation ("200 ✅ full")
+    if is_admin and update.message.reply_to_message and ("✅" in raw or "full" in text):
+        replied_msg = update.message.reply_to_message
+        amt = parse_amount(raw) or parse_amount(replied_msg.text or "")
+        if amt and amt >= 10.0:
+            # Agar replied message khud kisi aur ke message ka reply hai
+            if replied_msg.reply_to_message:
+                host = replied_msg.reply_to_message.from_user
+                opp = replied_msg.from_user
+                if host and opp and host.id != opp.id:
+                    get_or_create_user(host)
+                    get_or_create_user(opp)
+                    mode = detect_mode(raw + " " + (replied_msg.text or ""))
+                    clean_ids = [update.message.message_id, replied_msg.message_id, replied_msg.reply_to_message.message_id]
+                    await build_and_post_table(context, chat_id, host, opp, amt, mode, clean_ids)
+                    return
 
 def main():
     Thread(target=run_server, daemon=True).start()
