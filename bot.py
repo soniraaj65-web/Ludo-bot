@@ -6,12 +6,11 @@ import logging
 from datetime import datetime
 from threading import Thread
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatPermissions
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     MessageHandler,
     CallbackQueryHandler,
-    ChatMemberHandler,
     ContextTypes,
     filters,
 )
@@ -19,8 +18,6 @@ from telegram.ext import (
 # ---------------- CONFIGURATION ----------------
 BOT_TOKEN = "9076286788:AAFcfibMCKsdMVvkkt3ajfacE6KRyLYAuLY"
 ADMINS = ["raj1235567", "gotit", "virat"]
-UPI_ID = "choudharyvikash4705-2@okicici"
-PAYEE_NAME = "Vikash Choudhary"
 COMMISSION_PERCENT = 10
 PORT = int(os.environ.get("PORT", 10000))
 
@@ -29,26 +26,20 @@ USER_LAST_BET_MSG = {}
 LAST_ACTIVE_TABLE_MSG_ID = None
 LAST_ACTIVE_ESTIMATE_MSG_ID = None
 
-BAD_WORDS = [
-    "mc", "bc", "bhosdike", "chutiya", "madarchod", "gandu", 
-    "lauda", "lodu", "behenchod", "harami", "bkl", "bsdk", "randi",
-    "chudai", "madarjat", "bhen ke lode", "mkl"
-]
-
 logging.basicConfig(level=logging.INFO)
 
-# ---------------- DUMMY HTTP SERVER (RENDER 24/7) ----------------
+# ---------------- RENDER 24/7 DUMMY SERVER ----------------
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Sky Table Powar Double Card Engine Live!")
+        self.wfile.write(b"Pure Ludo Match System Live!")
 
 def run_server():
     server = HTTPServer(("0.0.0.0", PORT), SimpleHandler)
     server.serve_forever()
 
-# ---------------- DATABASE SETUP ----------------
+# ---------------- DATABASE ENGINE ----------------
 def get_db():
     conn = sqlite3.connect("ludo_data.db", check_same_thread=False)
     conn.row_factory = sqlite3.Row
@@ -73,7 +64,9 @@ CREATE TABLE IF NOT EXISTS games (
     opponent TEXT,
     amount REAL,
     mode TEXT DEFAULT 'full',
-    status TEXT
+    status TEXT,
+    estimate_msg_id INTEGER,
+    chat_id INTEGER
 )
 """)
 c.execute("""
@@ -127,10 +120,9 @@ def parse_amount(text):
 def detect_mode(text):
     t_lower = text.lower()
     if any(k in t_lower for k in ["timer", "quick", "fast", "speed"]) or re.search(r"\b\d+\s*t\b", t_lower):
-        return "timer"
-    return "full"
+        return "Timer"
+    return "Classic Full"
 
-# ---------------- AUTO-CLEAN UTILITIES (30 SECONDS TIMERS) ----------------
 async def safe_delete(context: ContextTypes.DEFAULT_TYPE, chat_id, message_id):
     try:
         await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
@@ -141,47 +133,37 @@ async def delayed_delete(context: ContextTypes.DEFAULT_TYPE, chat_id, message_id
     await asyncio.sleep(delay_seconds)
     await safe_delete(context, chat_id, message_id)
 
-async def send_self_destruct_warning(context: ContextTypes.DEFAULT_TYPE, chat_id, text, delay=30):
-    try:
-        msg = await context.bot.send_message(chat_id=chat_id, text=text)
-        asyncio.create_task(delayed_delete(context, chat_id, msg.message_id, delay))
-    except Exception as e:
-        logging.error(f"Warning send error: {e}")
-
-# ---------------- PROFESSIONAL LIVE BALANCE SHEET ----------------
+# ---------------- PINNED LEDGER SHEET ----------------
 def generate_sheet_text():
     c.execute("SELECT name, username, balance FROM users WHERE balance != 0 ORDER BY balance DESC")
     rows = c.fetchall()
-    
     c.execute("SELECT COUNT(*) AS total_live FROM games WHERE status = 'PLAYING'")
     live_matches = c.fetchone()["total_live"]
-
     total_balance = sum(r["balance"] for r in rows)
     current_time = datetime.now().strftime("%I:%M %p")
     
     text = (
-        "👑 THE LUDO EMPIRE • OFFICIAL LEDGER 👑\n"
+        "👑 𝐓𝐇𝐄 𝐋𝐔𝐃𝐎 𝐄𝐌𝐏𝐈𝐑𝐄 • 𝐋𝐈𝐕𝐄 𝐋𝐄𝐃𝐆𝐄𝐑 👑\n"
         "════════════════════════════\n"
-        "📈 LIVE PLAYER BALANCES\n"
+        "📊 MEMBER BALANCES:\n"
         "────────────────────────────\n"
     )
-    
     if not rows:
-        text += "• Filhal sabhi balances 0.0 hain.\n"
+        text += "• Sabhi accounts filhal clear hain (₹0.0).\n"
     else:
         for idx, r in enumerate(rows, start=1):
-            disp_name = f"@{r['username']}" if r['username'] else r['name']
+            disp = f"@{r['username']}" if r['username'] else r['name']
             bal = r["balance"]
-            tag = "🟢" if bal >= 0 else "🔴"
-            text += f"{idx:02d}. {tag} {disp_name}: ₹{bal:.1f}\n"
+            dot = "🟢" if bal >= 0 else "🔴"
+            text += f"{idx:02d}. {dot} {disp}: ₹{bal:.1f}\n"
             
     text += (
         "────────────────────────────\n"
         f"💰 Total Club Reserve : ₹{total_balance:.1f}\n"
-        f"🎲 Active Tables Live  : {live_matches}\n"
-        f"⏱️ Last Synced At      : {current_time}\n"
+        f"⚔️ Active Tables Live : {live_matches}\n"
+        f"⏱️ Last Updated At    : {current_time}\n"
         "════════════════════════════\n"
-        "🔄 Sheet is real-time automated & auto-synced."
+        "🔄 Automated Real-Time Settlement Engine."
     )
     return text
 
@@ -195,48 +177,10 @@ async def sync_pinned_sheet(chat_id, context: ContextTypes.DEFAULT_TYPE):
                 message_id=PINNED_SHEET_MSG_ID,
                 text=sheet_content
             )
-        except Exception as e:
-            logging.error(f"Error auto-updating pinned sheet: {e}")
+        except Exception:
+            pass
 
-# ---------------- QR HELPER ----------------
-async def send_qr_message(chat_id, context: ContextTypes.DEFAULT_TYPE, reply_to_id=None):
-    caption = (
-        f"💳 OFFICIAL PAYMENT QR\n\n"
-        f"• Name: {PAYEE_NAME}\n"
-        f"• UPI ID: {UPI_ID}\n\n"
-        f"⚠️ Payment ke baad screenshot chat me bhejein (Screenshot delete nahi hoga)."
-    )
-    if os.path.exists("qr.jpg"):
-        with open("qr.jpg", "rb") as p:
-            sent = await context.bot.send_photo(chat_id=chat_id, photo=p, caption=caption, reply_to_message_id=reply_to_id)
-    else:
-        sent = await context.bot.send_message(chat_id=chat_id, text=caption, reply_to_message_id=reply_to_id)
-    
-    asyncio.create_task(delayed_delete(context, chat_id, sent.message_id, 30))
-
-# ---------------- WELCOME HANDLER ----------------
-async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    result = update.chat_member
-    if result.old_chat_member.status in ["left", "kicked"] and result.new_chat_member.status in ["member", "administrator"]:
-        new_user = result.new_chat_member.user
-        mention = f"@{new_user.username}" if new_user.username else new_user.first_name
-        
-        welcome_text = (
-            f"👋 WELCOME TO THE LUDO EMPIRE, {mention}! 🎲\n\n"
-            "✨ Direct table lagane ke liye amount likhein:\n"
-            "👉 50 | 100 | 500 full | 50 t | 1k | 5kff\n\n"
-            "• Challenge par reply karke ok ya lga karein\n"
-            "• Info check karne ke liye: info\n"
-            "• QR/Deposit ke liye: qr"
-        )
-        sent = await context.bot.send_message(chat_id=update.effective_chat.id, text=welcome_text)
-        asyncio.create_task(delayed_delete(context, update.effective_chat.id, sent.message_id, 30))
-
-# ---------------- PHOTO HANDLER ----------------
-async def handle_photo_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pass
-
-# ---------------- INLINE BUTTON CALLBACK (WINNER 1, WINNER 2, CANCEL, ESTIMATE) ----------------
+# ---------------- INTERACTIVE BUTTON CALLBACKS ----------------
 async def table_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user = query.from_user
@@ -256,20 +200,21 @@ async def table_action_callback(update: Update, context: ContextTypes.DEFAULT_TY
     host = game["host"]
     opponent = game["opponent"]
     amt = float(game["amount"])
+    est_msg_id = game["estimate_msg_id"]
 
-    # CHECK ESTIMATE BUTTON (Sabhi players live balance popup me dekh sakte hain)
+    # Real-Time Estimate Button Check
     if action == "est":
         host_rec = get_user_data(host)
         opp_rec = get_user_data(opponent)
         await query.answer(
-            f"📊 Table No. {table_no} Balance Status:\n\n"
+            f"📋 Action #{table_no} Current Balances:\n\n"
             f"@{host}: ₹{host_rec['balance']:.1f}\n"
             f"@{opponent}: ₹{opp_rec['balance']:.1f}",
             show_alert=True
         )
         return
 
-    # Cancel ya Winner declare karne ke liye Admin verification
+    # Admin check
     is_admin = False
     try:
         cm = await context.bot.get_chat_member(query.message.chat_id, user.id)
@@ -278,61 +223,116 @@ async def table_action_callback(update: Update, context: ContextTypes.DEFAULT_TY
         is_admin = user_clean in ADMINS
 
     if not is_admin:
-        await query.answer("❌ Only Admins can take this action!", show_alert=True)
+        await query.answer("❌ Only Admins can settle or cancel matches!", show_alert=True)
         return
 
     if game["status"] != "PLAYING":
         await query.answer("⚠️ Match already closed!", show_alert=True)
         return
 
-    # CANCEL LOGIC
+    # 1. CANCEL & REFUND (REAL-TIME EDIT IN SETTLEMENT LOG)
     if action == "cancel":
         host_rec = get_user_data(host)
         opp_rec = get_user_data(opponent)
 
-        update_user_balance(host, host_rec["balance"] + amt)
-        update_user_balance(opponent, opp_rec["balance"] + amt)
+        new_host_bal = host_rec["balance"] + amt
+        new_opp_bal = opp_rec["balance"] + amt
+
+        update_user_balance(host, new_host_bal)
+        update_user_balance(opponent, new_opp_bal)
 
         c.execute("UPDATE games SET status = 'CANCELED' WHERE id = ?", (game_id,))
         c.execute("UPDATE users SET in_match = 0 WHERE username IN (?, ?)", (host.lower(), opponent.lower()))
         db.commit()
 
+        # Table buttons remove
         await query.edit_message_reply_markup(reply_markup=None)
-        cancel_msg = await query.message.reply_text(f"🚫 Table No. {table_no} Canceled!\nRefunded to @{host} & @{opponent}.")[span_7](start_span)[span_7](end_span)
+
+        # Real-Time Settlement Card Edit
+        if est_msg_id:
+            try:
+                updated_est_card = (
+                    f"📋 ACTION #{table_no} SETTLEMENT LOG 🚫 [CANCELED]\n"
+                    f"──────────────────────\n"
+                    f"🟢 @{host}:\n"
+                    f"Refund: +₹{amt:.1f} ➔ ₹{new_host_bal:.1f}\n\n"
+                    f"🟢 @{opponent}:\n"
+                    f"Refund: +₹{amt:.1f} ➔ ₹{new_opp_bal:.1f}\n"
+                    f"──────────────────────"
+                )
+                await context.bot.edit_message_text(
+                    chat_id=query.message.chat_id,
+                    message_id=est_msg_id,
+                    text=updated_est_card,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Check Real-Time Estimate", callback_data=f"est:{game_id}")]])
+                )
+            except Exception as e:
+                logging.error(f"Error editing estimate card: {e}")
+
+        cancel_msg = await query.message.reply_text(
+            f"🚫 MATCH #{table_no} CANCELED!\n"
+            f"Dono players (@{host} & @{opponent}) ko ₹{amt:.1f} refund kar diya gaya hai."
+        )
         await sync_pinned_sheet(query.message.chat_id, context)
         asyncio.create_task(delayed_delete(context, query.message.chat_id, cancel_msg.message_id, 30))
-        await query.answer("Table Canceled & Refunded!")
+        await query.answer("Match Canceled & Refunded!")
         return
 
-    # WINNER LOGIC
+    # 2. WINNER DECLARATION (REAL-TIME EDIT IN SETTLEMENT LOG)
     if action in ["win1", "win2"]:
         winner_uname = host if action == "win1" else opponent
+        loser_uname = opponent if action == "win1" else host
+
         tot_pot = amt * 2.0
         commission = tot_pot * (COMMISSION_PERCENT / 100.0)
         win_amt = tot_pot - commission
 
-        user_rec = get_user_data(winner_uname)
-        new_bal = user_rec["balance"] + win_amt
-        update_user_balance(winner_uname, new_bal)
+        winner_rec = get_user_data(winner_uname)
+        loser_rec = get_user_data(loser_uname)
+
+        new_winner_bal = winner_rec["balance"] + win_amt
+        update_user_balance(winner_uname, new_winner_bal)
 
         c.execute("UPDATE games SET status = 'FINISHED' WHERE id = ?", (game_id,))
         c.execute("UPDATE users SET in_match = 0 WHERE username IN (?, ?)", (host.lower(), opponent.lower()))
         db.commit()
 
         await query.edit_message_reply_markup(reply_markup=None)
+
+        # Real-Time Settlement Card Edit
+        if est_msg_id:
+            try:
+                updated_est_card = (
+                    f"📋 ACTION #{table_no} SETTLEMENT LOG ✅ [SETTLED]\n"
+                    f"──────────────────────\n"
+                    f"👑 Winner: @{winner_uname}\n"
+                    f"+₹{win_amt:.1f} ({COMMISSION_PERCENT}% Cut) ➔ New Bal: ₹{new_winner_bal:.1f}\n\n"
+                    f"👤 Opponent: @{loser_uname}\n"
+                    f"Current Balance: ₹{loser_rec['balance']:.1f}\n"
+                    f"──────────────────────"
+                )
+                await context.bot.edit_message_text(
+                    chat_id=query.message.chat_id,
+                    message_id=est_msg_id,
+                    text=updated_est_card,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Check Real-Time Estimate", callback_data=f"est:{game_id}")]])
+                )
+            except Exception as e:
+                logging.error(f"Error editing estimate card: {e}")
+
         win_msg = await query.message.reply_text(
-            f"🏆 WINNER CONFIRMED (Table No. {table_no})!\n\n"
-            f"Winner: @{winner_uname}\n"
-            f"Pot: ₹{tot_pot:.1f}\n"
-            f"Credited: ₹{win_amt:.1f} (10% Cut) ✅"
+            f"🏆 MATCH #{table_no} WINNER CONFIRMED! 🏆\n\n"
+            f"👑 Winner: @{winner_uname}\n"
+            f"💰 Total Pot: ₹{tot_pot:.1f}\n"
+            f"✅ Credited: ₹{win_amt:.1f} ({COMMISSION_PERCENT}% Cut)"
         )
         await sync_pinned_sheet(query.message.chat_id, context)
         asyncio.create_task(delayed_delete(context, query.message.chat_id, win_msg.message_id, 30))
         await query.answer(f"@{winner_uname} won!")
         return
 
-# ---------------- MAIN ZERO-SLASH PROCESSING ENGINE ----------------
-async def zero_slash_table_power(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ---------------- MATCH ENGINE ----------------
+async def main_match_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global PINNED_SHEET_MSG_ID, USER_LAST_BET_MSG, LAST_ACTIVE_TABLE_MSG_ID, LAST_ACTIVE_ESTIMATE_MSG_ID
     if not update.message or not update.message.text:
         return
@@ -354,173 +354,78 @@ async def zero_slash_table_power(update: Update, context: ContextTypes.DEFAULT_T
 
     clean_cmd = text.lstrip("/").strip()
 
-    # 1. PIN SHEET TRIGGER
-    if clean_cmd in ["pinsheet", "pin sheet", "sheet", "ledger", "balancesheet"] and is_admin:
+    # 1. PIN SHEET
+    if clean_cmd in ["pinsheet", "sheet", "ledger"] and is_admin:
         sheet_text = generate_sheet_text()
         sent_msg = await update.message.reply_text(sheet_text)
         try:
-            await context.bot.pin_chat_message(
-                chat_id=update.effective_chat.id,
-                message_id=sent_msg.message_id,
-                disable_notification=True
-            )
+            await context.bot.pin_chat_message(chat_id=update.effective_chat.id, message_id=sent_msg.message_id, disable_notification=True)
             PINNED_SHEET_MSG_ID = sent_msg.message_id
-            await send_self_destruct_warning(context, update.effective_chat.id, "📌 Professional Ledger successfully pinned!", 30)
             asyncio.create_task(safe_delete(context, update.effective_chat.id, update.message.message_id))
-        except Exception as e:
-            logging.error(f"Pin error: {e}")
-        return
-
-    # 2. REAL TELEGRAM GROUP PERMISSION LOCK / UNLOCK
-    if clean_cmd in ["lock", "close", "band"] and is_admin:
-        try:
-            await context.bot.set_chat_permissions(
-                chat_id=update.effective_chat.id,
-                permissions=ChatPermissions(can_send_messages=False)
-            )
-            await send_self_destruct_warning(context, update.effective_chat.id, "🔒 GROUP LOCKED! Admin ke alawa koi message nahi bhej sakta.", 30)
         except Exception:
-            await send_self_destruct_warning(context, update.effective_chat.id, "⚠️ Bot ko 'Restrict Members' admin permission dein!", 30)
-        asyncio.create_task(safe_delete(context, update.effective_chat.id, update.message.message_id))
+            pass
         return
 
-    elif clean_cmd in ["unlock", "open group", "chalu", "start", "khula"] and is_admin:
-        try:
-            await context.bot.set_chat_permissions(
-                chat_id=update.effective_chat.id,
-                permissions=ChatPermissions(
-                    can_send_messages=True,
-                    can_send_photos=True,
-                    can_send_other_messages=True
-                )
-            )
-            await send_self_destruct_warning(context, update.effective_chat.id, "🔓 GROUP UNLOCKED! Members ab message bhej sakte hain.", 30)
-        except Exception:
-            await send_self_destruct_warning(context, update.effective_chat.id, "⚠️ Bot ko 'Restrict Members' admin permission dein!", 30)
-        asyncio.create_task(safe_delete(context, update.effective_chat.id, update.message.message_id))
-        return
-
-    # 3. ANTI-GALI & ANTI-LINK FILTER
-    if not is_admin:
-        words = text.split()
-        if any(bad in words or bad in text for bad in BAD_WORDS) or ("http://" in text or "https://" in text or "t.me/" in text):
-            asyncio.create_task(safe_delete(context, update.effective_chat.id, update.message.message_id))
-            await send_self_destruct_warning(context, update.effective_chat.id, f"⚠️ {sender_name}, abusive bhasha/links allowed nahi hain!", 30)
-            return
-
-    # 4. ADMIN REPLY BALANCE ADD (Deleted after 30s)
-    add_match = re.match(r"^(?:add|addbal|\+|ubdet|credit)\s*(\d+(?:\.\d+)?\s*k|\d+)", text)
+    # 2. BALANCE ADD (Reply: 'add 500', '+1000')
+    add_match = re.match(r"^(?:add|addbal|\+|credit)\s*(\d+(?:\.\d+)?\s*k|\d+)", text)
     if update.message.reply_to_message and add_match and is_admin:
-        replied_user = update.message.reply_to_message.from_user
-        if replied_user:
-            target_uname = replied_user.username or replied_user.first_name
-            target_name = f"@{replied_user.username}" if replied_user.username else (replied_user.first_name or target_uname)
+        target = update.message.reply_to_message.from_user
+        if target:
+            t_uname = target.username or target.first_name
+            t_name = f"@{target.username}" if target.username else target.first_name
             amt = parse_amount(add_match.group(1))
-            if amt and amt > 0:
-                user_rec = get_user_data(target_uname, target_name)
-                old_bal = float(user_rec["balance"])
-                new_bal = old_bal + amt
-                update_user_balance(target_uname, new_bal, target_name)
-
-                keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("💳 Full Details", callback_data="none")]])
-                msg = (
-                    f"Balance Added ✅\n\n"
-                    f"💳 New Balance: {new_bal}\n"
-                    f"👤 User: {target_name}\n\n"
-                    f"changes: {old_bal} + {amt}"
-                )
-                sent = await update.message.reply_text(msg, reply_markup=keyboard)
+            if amt:
+                user_rec = get_user_data(t_uname, t_name)
+                new_bal = float(user_rec["balance"]) + amt
+                update_user_balance(t_uname, new_bal, t_name)
+                sent = await update.message.reply_text(f"💳 Balance Credited ✅\nUser: {t_name}\nUpdated Balance: ₹{new_bal:.1f}")
                 await sync_pinned_sheet(update.effective_chat.id, context)
                 asyncio.create_task(delayed_delete(context, update.effective_chat.id, sent.message_id, 30))
                 return
 
-    # 5. ADMIN REPLY BALANCE CUT (Deleted after 30s)
-    cut_match = re.match(r"^(?:cut|cutbal|-|debit|kat)\s*(\d+(?:\.\d+)?\s*k|\d+)", text)
+    # 3. BALANCE CUT (Reply: 'cut 200', '-500')
+    cut_match = re.match(r"^(?:cut|cutbal|-|debit)\s*(\d+(?:\.\d+)?\s*k|\d+)", text)
     if update.message.reply_to_message and cut_match and is_admin:
-        replied_user = update.message.reply_to_message.from_user
-        if replied_user:
-            target_uname = replied_user.username or replied_user.first_name
-            target_name = f"@{replied_user.username}" if replied_user.username else (replied_user.first_name or target_uname)
+        target = update.message.reply_to_message.from_user
+        if target:
+            t_uname = target.username or target.first_name
+            t_name = f"@{target.username}" if target.username else target.first_name
             amt = parse_amount(cut_match.group(1))
-            if amt and amt > 0:
-                user_rec = get_user_data(target_uname, target_name)
-                old_bal = float(user_rec["balance"])
-                new_bal = old_bal - amt
-                update_user_balance(target_uname, new_bal, target_name)
-
-                keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("💳 Full Details", callback_data="none")]])
-                msg = (
-                    f"Balance Deducted ✂️\n\n"
-                    f"💳 New Balance: {new_bal}\n"
-                    f"👤 User: {target_name}\n\n"
-                    f"changes: {old_bal} - {amt}"
-                )
-                sent = await update.message.reply_text(msg, reply_markup=keyboard)
+            if amt:
+                user_rec = get_user_data(t_uname, t_name)
+                new_bal = float(user_rec["balance"]) - amt
+                update_user_balance(t_uname, new_bal, t_name)
+                sent = await update.message.reply_text(f"✂️ Balance Deducted\nUser: {t_name}\nUpdated Balance: ₹{new_bal:.1f}")
                 await sync_pinned_sheet(update.effective_chat.id, context)
                 asyncio.create_task(delayed_delete(context, update.effective_chat.id, sent.message_id, 30))
                 return
 
-    # 6. USER INFO CARD
-    if clean_cmd in ["info", "bal", "balance", "mybal", "profile"]:
+    # 4. USER BALANCE CHECK
+    if clean_cmd in ["info", "bal", "balance", "mybal"]:
         user_rec = get_user_data(sender_username, sender_name)
         disp_u = f"@{sender.username}" if sender.username else sender_name
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("💳 Full Details", callback_data="none")]])
-        msg = (
-            f"💰 {disp_u}'s INFO:\n\n"
-            f"💳 Balance : {user_rec['balance']}\n"
-            f"📕 Side Balance: {user_rec['side_balance']}\n"
-            f"⏳ In-Match: {'True' if user_rec['in_match'] else 'False'}"
-        )
-        sent = await update.message.reply_text(msg, reply_markup=keyboard)
-        asyncio.create_task(delayed_delete(context, update.effective_chat.id, sent.message_id, 30))
-        asyncio.create_task(delayed_delete(context, update.effective_chat.id, update.message.message_id, 30))
+        sent = await update.message.reply_text(f"👤 {disp_u}\n💰 Balance: ₹{user_rec['balance']:.1f}")
+        asyncio.create_task(delayed_delete(context, update.effective_chat.id, sent.message_id, 20))
+        asyncio.create_task(delayed_delete(context, update.effective_chat.id, update.message.message_id, 20))
         return
 
-    # 7. QR CODE
-    if clean_cmd in ["qr", "payment", "scanner", "pay", "upi", "paisa"]:
-        await send_qr_message(update.effective_chat.id, context, update.message.message_id)
-        asyncio.create_task(delayed_delete(context, update.effective_chat.id, update.message.message_id, 30))
-        return
-
-    # 8. WITHDRAWAL
-    wd_match = re.match(r"^(?:withdraw|wd|nikalo)\s+(\d+)\s+([a-zA-Z0-9.\-_+@]+)$", text)
-    if wd_match:
-        amt = float(wd_match.group(1))
-        upi_id = wd_match.group(2)
-        user_rec = get_user_data(sender_username, sender_name)
-        if user_rec["balance"] < amt:
-            await send_self_destruct_warning(context, update.effective_chat.id, f"❌ Low Balance! Aapka balance ₹{user_rec['balance']} hai.", 30)
-            asyncio.create_task(delayed_delete(context, update.effective_chat.id, update.message.message_id, 30))
-            return
-
-        update_user_balance(sender_username, user_rec["balance"] - amt)
-        await sync_pinned_sheet(update.effective_chat.id, context)
-        msg = (
-            f"🔔 WITHDRAWAL REQUEST\n\n"
-            f"• User: @{sender_username}\n"
-            f"• Amount: ₹{amt}\n"
-            f"• UPI ID: {upi_id}\n\n"
-            f"Admin verify karke transfer bhej denge! ✅"
-        )
-        sent = await update.message.reply_text(msg)
-        asyncio.create_task(delayed_delete(context, update.effective_chat.id, sent.message_id, 30))
-        asyncio.create_task(delayed_delete(context, update.effective_chat.id, update.message.message_id, 30))
-        return
-
-    # 9. LUDO KING ROOM CODE
+    # 5. ROOM CODE DETECTION
     code_match = re.search(r"\b\d{8}\b", text)
     if code_match or clean_cmd.startswith("code "):
         code_val = code_match.group(0) if code_match else clean_cmd.replace("code", "").strip()
         c.execute("SELECT * FROM games WHERE (host = ? OR opponent = ?) AND status = 'PLAYING'", (sender_clean, sender_clean))
         game = c.fetchone()
         if game:
-            sent_code = await update.message.reply_text(
-                f"🎮 LUDO ROOM CODE: {code_val}\n\nPlayers: @{game['host']} VS @{game['opponent']}\nMatch start karein! 🎲"
+            await update.message.reply_text(
+                f"🎲 𝐋𝐔𝐃𝐎 𝐑𝐎𝐎𝐌 𝐂𝐎𝐃𝐄: `{code_val}`\n\n"
+                f"⚔️ Match #{game['table_no']} (@{game['host']} VS @{game['opponent']})\n"
+                f"Room code enter karke match shuru karein!",
+                parse_mode="Markdown"
             )
             asyncio.create_task(delayed_delete(context, update.effective_chat.id, update.message.message_id, 30))
             return
 
-    # 10. REPLY TO FIX MATCH (SCREENSHOT EXACT DUAL-CARD ARCHITECTURE)
+    # 6. TABLE CREATION & THRESHOLD BALANCE CHECK
     if update.message.reply_to_message:
         replied_msg = update.message.reply_to_message
         amt = parse_amount(replied_msg.text or "")
@@ -531,9 +436,8 @@ async def zero_slash_table_power(update: Update, context: ContextTypes.DEFAULT_T
             "haan", "hm", "hmm", "hmmm", "accept", "ao", "aao", "aaja", "aajao", 
             "khelo", "khelna", "khel", "ready", "set", "deal", "confirm", "bhejo", "dal", "daal"
         }
-        
-        words_in_text = set(re.findall(r"\b\w+\b", text))
-        is_positive = bool(words_in_text.intersection(accept_triggers)) or (text.strip() in accept_triggers)
+        words = set(re.findall(r"\b\w+\b", text))
+        is_positive = bool(words.intersection(accept_triggers)) or (text.strip() in accept_triggers)
 
         if amt and amt >= 10.0 and is_positive:
             host_user = replied_msg.from_user
@@ -558,73 +462,83 @@ async def zero_slash_table_power(update: Update, context: ContextTypes.DEFAULT_T
             host_new = host_old - amt
             opp_new = opp_old - amt
 
+            # THRESHOLD LIMIT CHECK (Agar balance amount se kam ho)
+            if host_old < amt or opp_old < amt:
+                failed_user = host_disp if host_old < amt else opp_disp
+                fail_msg = (
+                    f"⚠️ 𝐓𝐀𝐁𝐋𝐄 𝐂𝐀𝐍𝐍𝐎𝐓 𝐁𝐄 𝐂𝐑𝐄𝐀𝐓𝐄𝐃!\n\n"
+                    f"Insufficient funds: {failed_user} ka balance required stake (₹{amt:.1f}) se kam hai.\n\n"
+                    f"{'🟢' if host_old >= amt else '🔴'} {host_disp}: ₹{host_old:.1f}\n"
+                    f"{'🟢' if opp_old >= amt else '🔴'} {opp_disp}: ₹{opp_old:.1f}"
+                )
+                sent_fail = await update.message.reply_text(fail_msg)
+                asyncio.create_task(delayed_delete(context, update.effective_chat.id, sent_fail.message_id, 20))
+                return
+
+            # Balances Deduct
             update_user_balance(host_uname, host_new)
             update_user_balance(opp_uname, opp_new)
 
             table_num = get_next_counter("table_counter")
 
-            c.execute("INSERT INTO games (table_no, host, opponent, amount, mode, status) VALUES (?, ?, ?, ?, ?, 'PLAYING')",
-                      (table_num, host_uname, opp_uname, amt, mode))
+            c.execute("INSERT INTO games (table_no, host, opponent, amount, mode, status, estimate_msg_id, chat_id) VALUES (?, ?, ?, ?, ?, 'PLAYING', NULL, ?)",
+                      (table_num, host_uname, opp_uname, amt, mode, update.effective_chat.id))
             game_id = c.lastrowid
             c.execute("UPDATE users SET in_match = 1 WHERE username IN (?, ?)", (host_uname.lower(), opp_uname.lower()))
             db.commit()
 
-            btn_h = re.sub(r'[^a-zA-Z0-9 ]', '', host_uname)[:8] or "Host"
-            btn_o = re.sub(r'[^a-zA-Z0-9 ]', '', opp_uname)[:8] or "Player"
+            btn_h = host_disp[:12]
+            btn_o = opp_disp[:12]
 
-            # ---------------- CARD 1: TABLE ACTION CARD ----------------
+            # CARD 1: EXACT ROYAL BRAND TABLE ACTION CARD (Screenshot Format)
             table_kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🚫 Cancel This Table", callback_data=f"cancel:{game_id}")],[span_8](start_span)[span_8](end_span)
+                [InlineKeyboardButton("🚫 CANCEL & REFUND", callback_data=f"cancel:{game_id}")],
                 [
-                    InlineKeyboardButton(f"🏆 #1 Won...", callback_data=f"win1:{game_id}"),[span_9](start_span)[span_9](end_span)
-                    InlineKeyboardButton(f"🏆 #2 Won...", callback_data=f"win2:{game_id}")[span_10](start_span)[span_10](end_span)
+                    InlineKeyboardButton(f"👑 {btn_h} WON", callback_data=f"win1:{game_id}"),
+                    InlineKeyboardButton(f"👑 {btn_o} WON", callback_data=f"win2:{game_id}")
                 ]
             ])
-
-            table_card_msg = (
-                f"🎲 Table No. {table_num}\n\n"
-                f"(1). {host_disp}\n\n"
-                f"(2). {opp_disp}\n\n"
-                f"{int(amt)} ✅ {mode}"
+            table_card = (
+                f"⚔️ THE LUDO EMPIRE • MATCH #{table_num} ⚔️\n"
+                f"──────────────────────\n"
+                f"👤 Player 1: {host_disp}\n"
+                f"👤 Player 2: {opp_disp}\n\n"
+                f"💰 Stake: ₹{int(amt)} | Mode: {mode}\n"
+                f"⚡ Match Status: LIVE IN PROGRESS 🎲\n"
+                f"──────────────────────"
             )
 
-            # Purani table aur action message auto delete
+            # CARD 2: EXACT REAL-TIME ESTIMATE SETTLEMENT LOG (Screenshot Format)
+            h_dot = "🟢" if host_new >= 0 else "🔴"
+            o_dot = "🟢" if opp_new >= 0 else "🔴"
+            est_kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Check Real-Time Estimate", callback_data=f"est:{game_id}")]])
+            est_card = (
+                f"📋 ACTION #{table_num} SETTLEMENT LOG ✅\n"
+                f"──────────────────────\n"
+                f"{h_dot} {host_disp}:\n"
+                f"₹{host_old:.1f} - ₹{amt:.1f} ➔ ₹{host_new:.1f}\n\n"
+                f"{o_dot} {opp_disp}:\n"
+                f"₹{opp_old:.1f} - ₹{amt:.1f} ➔ ₹{opp_new:.1f}\n"
+                f"──────────────────────"
+            )
+
+            # Purani Table & Estimate Delete
             if LAST_ACTIVE_TABLE_MSG_ID:
                 asyncio.create_task(delayed_delete(context, update.effective_chat.id, LAST_ACTIVE_TABLE_MSG_ID, 30))
             if LAST_ACTIVE_ESTIMATE_MSG_ID:
                 asyncio.create_task(delayed_delete(context, update.effective_chat.id, LAST_ACTIVE_ESTIMATE_MSG_ID, 30))
 
-            sent_table = await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=table_card_msg,
-                reply_markup=table_kb
-            )
-            LAST_ACTIVE_TABLE_MSG_ID = sent_table.message_id
+            sent_t = await context.bot.send_message(chat_id=update.effective_chat.id, text=table_card, reply_markup=table_kb)
+            LAST_ACTIVE_TABLE_MSG_ID = sent_t.message_id
 
-            # ---------------- CARD 2: ACTION ESTIMATE CARD ----------------
-            h_dot = "🟢" if host_new >= 0 else "🔴"
-            o_dot = "🟢" if opp_new >= 0 else "🔴"
+            sent_e = await context.bot.send_message(chat_id=update.effective_chat.id, text=est_card, reply_markup=est_kb)
+            LAST_ACTIVE_ESTIMATE_MSG_ID = sent_e.message_id
 
-            estimate_kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔄 Check Estimate", callback_data=f"est:{game_id}")][span_11](start_span)[span_11](end_span)
-            ])
+            # Database me Estimate Message ID link karna (taaki Settlement ke waqt real time edit ho sake)
+            c.execute("UPDATE games SET estimate_msg_id = ? WHERE id = ?", (sent_e.message_id, game_id))
+            db.commit()
 
-            estimate_card_msg = (
-                f"Action #{table_num} successful! ✅\n\n"
-                f"{h_dot} {host_disp} estimate:\n"
-                f"{host_old:.1f} - {amt:.1f} ➔ {host_new:.1f}\n\n"
-                f"{o_dot} {opp_disp} estimate:\n"
-                f"{opp_old:.1f} - {amt:.1f} ➔ {opp_new:.1f}"
-            )
-
-            sent_estimate = await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=estimate_card_msg,
-                reply_markup=estimate_kb
-            )
-            LAST_ACTIVE_ESTIMATE_MSG_ID = sent_estimate.message_id
-
-            # Bet message & accept message 30 seconds baad auto delete
+            # Challenge aur acceptance messages 30 sec me delete
             asyncio.create_task(delayed_delete(context, update.effective_chat.id, replied_msg.message_id, 30))
             asyncio.create_task(delayed_delete(context, update.effective_chat.id, update.message.message_id, 30))
 
@@ -634,37 +548,7 @@ async def zero_slash_table_power(update: Update, context: ContextTypes.DEFAULT_T
             await sync_pinned_sheet(update.effective_chat.id, context)
             return
 
-    # 11. WINNER CONFIRM VIA REPLY (Admin typing 'win', 'ss', 'winner')
-    if update.message.reply_to_message and clean_cmd in ["win", "winner", "ss", "pass", "loss"] and is_admin:
-        replied_user = update.message.reply_to_message.from_user
-        if replied_user:
-            target_uname = replied_user.username or replied_user.first_name
-            c.execute("SELECT * FROM games WHERE (host = ? OR opponent = ?) AND status = 'PLAYING'", (target_uname, target_uname))
-            game = c.fetchone()
-            if game:
-                tot_pot = game["amount"] * 2.0
-                commission = tot_pot * (COMMISSION_PERCENT / 100.0)
-                win_amt = tot_pot - commission
-
-                user_rec = get_user_data(target_uname)
-                new_bal = user_rec["balance"] + win_amt
-                update_user_balance(target_uname, new_bal)
-
-                c.execute("DELETE FROM games WHERE id = ?", (game["id"],))
-                c.execute("UPDATE users SET in_match = 0 WHERE username IN (?, ?)", (game["host"], game["opponent"]))
-                db.commit()
-
-                sent_win = await update.message.reply_text(
-                    f"🏆 WINNER CONFIRMED (Table No. {game['table_no']})!\n\n"
-                    f"Winner: @{target_uname}\n"
-                    f"Pot: ₹{tot_pot}\n"
-                    f"Credited: ₹{win_amt:.1f} (10% Cut) ✅"
-                )
-                await sync_pinned_sheet(update.effective_chat.id, context)
-                asyncio.create_task(delayed_delete(context, update.effective_chat.id, sent_win.message_id, 30))
-                return
-
-    # 12. SILENT BET WITH 30 SECONDS AUTO PURGE
+    # 7. SILENT BET DETECTOR
     amt_test = parse_amount(text)
     if amt_test and amt_test >= 10.0:
         if old_mid := USER_LAST_BET_MSG.get(sender_clean):
@@ -674,22 +558,17 @@ async def zero_slash_table_power(update: Update, context: ContextTypes.DEFAULT_T
         return
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logging.error(msg="Exception while handling update:", exc_info=context.error)
+    logging.error(msg="Exception in main engine:", exc_info=context.error)
 
-# ---------------- MAIN FUNCTION ----------------
+# ---------------- MAIN APPLICATION ----------------
 def main():
     Thread(target=run_server, daemon=True).start()
-
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    app.add_handler(ChatMemberHandler(welcome_new_member, ChatMemberHandler.CHAT_MEMBER))
     app.add_handler(CallbackQueryHandler(table_action_callback))
-    app.add_handler(MessageHandler(filters.TEXT, zero_slash_table_power))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo_messages))
-
+    app.add_handler(MessageHandler(filters.TEXT, main_match_router))
     app.add_error_handler(error_handler)
 
-    logging.info("Ultra Universal All-Keywords Engine Live...")
+    logging.info("The Ludo Empire Royal Match Engine Online...")
     app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
