@@ -27,6 +27,7 @@ PORT = int(os.environ.get("PORT", 10000))
 PINNED_SHEET_MSG_ID = None
 USER_LAST_BET_MSG = {}
 LAST_ACTIVE_TABLE_MSG_ID = None
+LAST_ACTIVE_ESTIMATE_MSG_ID = None
 
 BAD_WORDS = [
     "mc", "bc", "bhosdike", "chutiya", "madarchod", "gandu", 
@@ -36,12 +37,12 @@ BAD_WORDS = [
 
 logging.basicConfig(level=logging.INFO)
 
-# ---------------- DUMMY HTTP SERVER (RENDER 24/7 KEEP-ALIVE) ----------------
+# ---------------- DUMMY HTTP SERVER (RENDER 24/7) ----------------
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Sky Table Powar Ultimate All-In-One Live Engine!")
+        self.wfile.write(b"Sky Table Powar Double Card Engine Live!")
 
 def run_server():
     server = HTTPServer(("0.0.0.0", PORT), SimpleHandler)
@@ -169,10 +170,10 @@ def generate_sheet_text():
         text += "• Filhal sabhi balances 0.0 hain.\n"
     else:
         for idx, r in enumerate(rows, start=1):
-            disp_name = r["name"] or r["username"]
+            disp_name = f"@{r['username']}" if r['username'] else r['name']
             bal = r["balance"]
             tag = "🟢" if bal >= 0 else "🔴"
-            text += f"{idx:02d}. {tag} {disp_name} (@{r['username']}): ₹{bal:.1f}\n"
+            text += f"{idx:02d}. {tag} {disp_name}: ₹{bal:.1f}\n"
             
     text += (
         "────────────────────────────\n"
@@ -231,18 +232,44 @@ async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
         sent = await context.bot.send_message(chat_id=update.effective_chat.id, text=welcome_text)
         asyncio.create_task(delayed_delete(context, update.effective_chat.id, sent.message_id, 30))
 
-# ---------------- PHOTO HANDLER (PERMANENT SCREENSHOTS) ----------------
+# ---------------- PHOTO HANDLER ----------------
 async def handle_photo_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Screenshots are never auto-deleted to preserve transaction audit proof
     pass
 
-# ---------------- INLINE BUTTON CALLBACK (WINNER 1, WINNER 2, CANCEL) ----------------
+# ---------------- INLINE BUTTON CALLBACK (WINNER 1, WINNER 2, CANCEL, ESTIMATE) ----------------
 async def table_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user = query.from_user
     user_clean = (user.username or user.first_name or "").lower().replace("@", "")
 
-    # Admin verification
+    data = query.data.split(":")
+    action = data[0]
+    game_id = int(data[1])
+
+    c.execute("SELECT * FROM games WHERE id = ?", (game_id,))
+    game = c.fetchone()
+    if not game:
+        await query.answer("⚠️ Match record not found!", show_alert=True)
+        return
+
+    table_no = game["table_no"]
+    host = game["host"]
+    opponent = game["opponent"]
+    amt = float(game["amount"])
+
+    # CHECK ESTIMATE BUTTON (Sabhi players live balance popup me dekh sakte hain)
+    if action == "est":
+        host_rec = get_user_data(host)
+        opp_rec = get_user_data(opponent)
+        await query.answer(
+            f"📊 Table No. {table_no} Balance Status:\n\n"
+            f"@{host}: ₹{host_rec['balance']:.1f}\n"
+            f"@{opponent}: ₹{opp_rec['balance']:.1f}",
+            show_alert=True
+        )
+        return
+
+    # Cancel ya Winner declare karne ke liye Admin verification
     is_admin = False
     try:
         cm = await context.bot.get_chat_member(query.message.chat_id, user.id)
@@ -251,25 +278,14 @@ async def table_action_callback(update: Update, context: ContextTypes.DEFAULT_TY
         is_admin = user_clean in ADMINS
 
     if not is_admin:
-        await query.answer("❌ Only Admins can take table action!", show_alert=True)
+        await query.answer("❌ Only Admins can take this action!", show_alert=True)
         return
 
-    data = query.data.split(":")
-    action = data[0]
-    game_id = int(data[1])
-
-    c.execute("SELECT * FROM games WHERE id = ?", (game_id,))
-    game = c.fetchone()
-    if not game or game["status"] != "PLAYING":
+    if game["status"] != "PLAYING":
         await query.answer("⚠️ Match already closed!", show_alert=True)
         return
 
-    table_no = game["table_no"]
-    host = game["host"]
-    opponent = game["opponent"]
-    amt = float(game["amount"])
-
-    # 1. CANCEL BUTTON
+    # CANCEL LOGIC
     if action == "cancel":
         host_rec = get_user_data(host)
         opp_rec = get_user_data(opponent)
@@ -282,13 +298,13 @@ async def table_action_callback(update: Update, context: ContextTypes.DEFAULT_TY
         db.commit()
 
         await query.edit_message_reply_markup(reply_markup=None)
-        cancel_msg = await query.message.reply_text(f"🚫 Table No. {table_no} Canceled!\nRefunded to @{host} & @{opponent}.")
+        cancel_msg = await query.message.reply_text(f"🚫 Table No. {table_no} Canceled!\nRefunded to @{host} & @{opponent}.")[span_7](start_span)[span_7](end_span)
         await sync_pinned_sheet(query.message.chat_id, context)
         asyncio.create_task(delayed_delete(context, query.message.chat_id, cancel_msg.message_id, 30))
         await query.answer("Table Canceled & Refunded!")
         return
 
-    # 2. WINNER 1 OR WINNER 2
+    # WINNER LOGIC
     if action in ["win1", "win2"]:
         winner_uname = host if action == "win1" else opponent
         tot_pot = amt * 2.0
@@ -317,7 +333,7 @@ async def table_action_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
 # ---------------- MAIN ZERO-SLASH PROCESSING ENGINE ----------------
 async def zero_slash_table_power(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global PINNED_SHEET_MSG_ID, USER_LAST_BET_MSG, LAST_ACTIVE_TABLE_MSG_ID
+    global PINNED_SHEET_MSG_ID, USER_LAST_BET_MSG, LAST_ACTIVE_TABLE_MSG_ID, LAST_ACTIVE_ESTIMATE_MSG_ID
     if not update.message or not update.message.text:
         return
 
@@ -338,7 +354,7 @@ async def zero_slash_table_power(update: Update, context: ContextTypes.DEFAULT_T
 
     clean_cmd = text.lstrip("/").strip()
 
-    # 1. PIN SHEET TRIGGER (Admin)
+    # 1. PIN SHEET TRIGGER
     if clean_cmd in ["pinsheet", "pin sheet", "sheet", "ledger", "balancesheet"] and is_admin:
         sheet_text = generate_sheet_text()
         sent_msg = await update.message.reply_text(sheet_text)
@@ -392,13 +408,13 @@ async def zero_slash_table_power(update: Update, context: ContextTypes.DEFAULT_T
             await send_self_destruct_warning(context, update.effective_chat.id, f"⚠️ {sender_name}, abusive bhasha/links allowed nahi hain!", 30)
             return
 
-    # 4. ADMIN REPLY BALANCE ADD (Deleted after 30s)[span_10](start_span)[span_10](end_span)
+    # 4. ADMIN REPLY BALANCE ADD (Deleted after 30s)
     add_match = re.match(r"^(?:add|addbal|\+|ubdet|credit)\s*(\d+(?:\.\d+)?\s*k|\d+)", text)
     if update.message.reply_to_message and add_match and is_admin:
         replied_user = update.message.reply_to_message.from_user
         if replied_user:
             target_uname = replied_user.username or replied_user.first_name
-            target_name = replied_user.first_name or target_uname
+            target_name = f"@{replied_user.username}" if replied_user.username else (replied_user.first_name or target_uname)
             amt = parse_amount(add_match.group(1))
             if amt and amt > 0:
                 user_rec = get_user_data(target_uname, target_name)
@@ -424,7 +440,7 @@ async def zero_slash_table_power(update: Update, context: ContextTypes.DEFAULT_T
         replied_user = update.message.reply_to_message.from_user
         if replied_user:
             target_uname = replied_user.username or replied_user.first_name
-            target_name = replied_user.first_name or target_uname
+            target_name = f"@{replied_user.username}" if replied_user.username else (replied_user.first_name or target_uname)
             amt = parse_amount(cut_match.group(1))
             if amt and amt > 0:
                 user_rec = get_user_data(target_uname, target_name)
@@ -444,12 +460,13 @@ async def zero_slash_table_power(update: Update, context: ContextTypes.DEFAULT_T
                 asyncio.create_task(delayed_delete(context, update.effective_chat.id, sent.message_id, 30))
                 return
 
-    # 6. USER INFO CARD (Deleted after 30s)
+    # 6. USER INFO CARD
     if clean_cmd in ["info", "bal", "balance", "mybal", "profile"]:
         user_rec = get_user_data(sender_username, sender_name)
+        disp_u = f"@{sender.username}" if sender.username else sender_name
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("💳 Full Details", callback_data="none")]])
         msg = (
-            f"💰 {user_rec['name']}'s INFO:\n\n"
+            f"💰 {disp_u}'s INFO:\n\n"
             f"💳 Balance : {user_rec['balance']}\n"
             f"📕 Side Balance: {user_rec['side_balance']}\n"
             f"⏳ In-Match: {'True' if user_rec['in_match'] else 'False'}"
@@ -459,7 +476,7 @@ async def zero_slash_table_power(update: Update, context: ContextTypes.DEFAULT_T
         asyncio.create_task(delayed_delete(context, update.effective_chat.id, update.message.message_id, 30))
         return
 
-    # 7. QR CODE (Deleted after 30s)[span_11](start_span)[span_11](end_span)
+    # 7. QR CODE
     if clean_cmd in ["qr", "payment", "scanner", "pay", "upi", "paisa"]:
         await send_qr_message(update.effective_chat.id, context, update.message.message_id)
         asyncio.create_task(delayed_delete(context, update.effective_chat.id, update.message.message_id, 30))
@@ -503,15 +520,20 @@ async def zero_slash_table_power(update: Update, context: ContextTypes.DEFAULT_T
             asyncio.create_task(delayed_delete(context, update.effective_chat.id, update.message.message_id, 30))
             return
 
-    # 10. REPLY TO FIX MATCH (TABLE NO. + ESTIMATE + INLINE BUTTONS)[span_12](start_span)[span_12](end_span)[span_13](start_span)[span_13](end_span)
+    # 10. REPLY TO FIX MATCH (SCREENSHOT EXACT DUAL-CARD ARCHITECTURE)
     if update.message.reply_to_message:
         replied_msg = update.message.reply_to_message
         amt = parse_amount(replied_msg.text or "")
         
-        # Check acceptance triggers flexibly
-        accept_triggers = ["ok", "okay", "lga", "lagao", "play", "done", "yes", "ha", "haa", "accept", "ao", "aao", "khelo", "khelna", "l"][span_14](start_span)[span_14](end_span)
-        words_in_text = re.findall(r"\w+", text)
-        is_positive = any(w in accept_triggers for w in words_in_text) or any(t in text for t in ["ok", "lga", "lagao", "done"])
+        accept_triggers = {
+            "t", "l", "k", "y", "h", "ok", "okay", "lga", "lagao", "lagado", 
+            "lagade", "play", "done", "yes", "yup", "yo", "ha", "haa", "han", 
+            "haan", "hm", "hmm", "hmmm", "accept", "ao", "aao", "aaja", "aajao", 
+            "khelo", "khelna", "khel", "ready", "set", "deal", "confirm", "bhejo", "dal", "daal"
+        }
+        
+        words_in_text = set(re.findall(r"\b\w+\b", text))
+        is_positive = bool(words_in_text.intersection(accept_triggers)) or (text.strip() in accept_triggers)
 
         if amt and amt >= 10.0 and is_positive:
             host_user = replied_msg.from_user
@@ -522,6 +544,9 @@ async def zero_slash_table_power(update: Update, context: ContextTypes.DEFAULT_T
             host_name = host_user.first_name or host_uname
             opp_uname = sender_username
             opp_name = sender_name
+
+            host_disp = f"@{host_user.username}" if host_user.username else host_name
+            opp_disp = f"@{sender.username}" if sender.username else opp_name
 
             mode = detect_mode(replied_msg.text or "")
 
@@ -544,44 +569,62 @@ async def zero_slash_table_power(update: Update, context: ContextTypes.DEFAULT_T
             c.execute("UPDATE users SET in_match = 1 WHERE username IN (?, ?)", (host_uname.lower(), opp_uname.lower()))
             db.commit()
 
-            btn_h = re.sub(r'[^a-zA-Z0-9 ]', '', host_name)[:8] or "Host"
-            btn_o = re.sub(r'[^a-zA-Z0-9 ]', '', opp_name)[:8] or "Player"
+            btn_h = re.sub(r'[^a-zA-Z0-9 ]', '', host_uname)[:8] or "Host"
+            btn_o = re.sub(r'[^a-zA-Z0-9 ]', '', opp_uname)[:8] or "Player"
 
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🚫 Cancel This Table", callback_data=f"cancel:{game_id}")],[span_15](start_span)[span_15](end_span)
+            # ---------------- CARD 1: TABLE ACTION CARD ----------------
+            table_kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🚫 Cancel This Table", callback_data=f"cancel:{game_id}")],[span_8](start_span)[span_8](end_span)
                 [
-                    InlineKeyboardButton(f"🏆 #1 Won ({btn_h})", callback_data=f"win1:{game_id}"),[span_16](start_span)[span_16](end_span)
-                    InlineKeyboardButton(f"🏆 #2 Won ({btn_o})", callback_data=f"win2:{game_id}")[span_17](start_span)[span_17](end_span)
+                    InlineKeyboardButton(f"🏆 #1 Won...", callback_data=f"win1:{game_id}"),[span_9](start_span)[span_9](end_span)
+                    InlineKeyboardButton(f"🏆 #2 Won...", callback_data=f"win2:{game_id}")[span_10](start_span)[span_10](end_span)
                 ]
             ])
 
-            h_dot = "🟢" if host_new >= 0 else "🔴"
-            o_dot = "🟢" if opp_new >= 0 else "🔴"
-
-            # Clean robust text without Markdown crash[span_18](start_span)[span_18](end_span)
-            msg = (
+            table_card_msg = (
                 f"🎲 Table No. {table_num}\n\n"
-                f"(1). {host_name} ✅✅\n\n"
-                f"(2). {opp_name}\n\n"
-                f"{int(amt)} ✅ {mode}\n\n"
-                f"Action ✅\n\n"
-                f"{h_dot} {host_name} estimate:\n"
-                f"{host_old:.1f} - {amt:.1f} ➔ {host_new:.1f}\n\n"
-                f"{o_dot} {opp_name} estimate:\n"
-                f"{opp_old:.1f} - {amt:.1f} ➔ {opp_new:.1f}"
+                f"(1). {host_disp}\n\n"
+                f"(2). {opp_disp}\n\n"
+                f"{int(amt)} ✅ {mode}"
             )
 
+            # Purani table aur action message auto delete
             if LAST_ACTIVE_TABLE_MSG_ID:
                 asyncio.create_task(delayed_delete(context, update.effective_chat.id, LAST_ACTIVE_TABLE_MSG_ID, 30))
+            if LAST_ACTIVE_ESTIMATE_MSG_ID:
+                asyncio.create_task(delayed_delete(context, update.effective_chat.id, LAST_ACTIVE_ESTIMATE_MSG_ID, 30))
 
             sent_table = await context.bot.send_message(
                 chat_id=update.effective_chat.id,
-                text=msg,
-                reply_markup=keyboard
+                text=table_card_msg,
+                reply_markup=table_kb
             )
             LAST_ACTIVE_TABLE_MSG_ID = sent_table.message_id
 
-            # 30 SECONDS BAAD PURGE: Host bet & Opponent OK[span_19](start_span)[span_19](end_span)
+            # ---------------- CARD 2: ACTION ESTIMATE CARD ----------------
+            h_dot = "🟢" if host_new >= 0 else "🔴"
+            o_dot = "🟢" if opp_new >= 0 else "🔴"
+
+            estimate_kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Check Estimate", callback_data=f"est:{game_id}")][span_11](start_span)[span_11](end_span)
+            ])
+
+            estimate_card_msg = (
+                f"Action #{table_num} successful! ✅\n\n"
+                f"{h_dot} {host_disp} estimate:\n"
+                f"{host_old:.1f} - {amt:.1f} ➔ {host_new:.1f}\n\n"
+                f"{o_dot} {opp_disp} estimate:\n"
+                f"{opp_old:.1f} - {amt:.1f} ➔ {opp_new:.1f}"
+            )
+
+            sent_estimate = await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=estimate_card_msg,
+                reply_markup=estimate_kb
+            )
+            LAST_ACTIVE_ESTIMATE_MSG_ID = sent_estimate.message_id
+
+            # Bet message & accept message 30 seconds baad auto delete
             asyncio.create_task(delayed_delete(context, update.effective_chat.id, replied_msg.message_id, 30))
             asyncio.create_task(delayed_delete(context, update.effective_chat.id, update.message.message_id, 30))
 
@@ -621,7 +664,7 @@ async def zero_slash_table_power(update: Update, context: ContextTypes.DEFAULT_T
                 asyncio.create_task(delayed_delete(context, update.effective_chat.id, sent_win.message_id, 30))
                 return
 
-    # 12. SILENT BET WITH 30 SECONDS AUTO PURGE (e.g. 500f, 500ff, 1k, 100)[span_20](start_span)[span_20](end_span)
+    # 12. SILENT BET WITH 30 SECONDS AUTO PURGE
     amt_test = parse_amount(text)
     if amt_test and amt_test >= 10.0:
         if old_mid := USER_LAST_BET_MSG.get(sender_clean):
@@ -646,9 +689,8 @@ def main():
 
     app.add_error_handler(error_handler)
 
-    logging.info("Ultra All-In-One Engine Active & Polling...")
+    logging.info("Ultra Universal All-Keywords Engine Live...")
     app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
-        
