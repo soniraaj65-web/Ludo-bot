@@ -7,6 +7,7 @@ from datetime import datetime
 from threading import Thread
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.constants import ParseMode
 from telegram.ext import (
     ApplicationBuilder,
     MessageHandler,
@@ -17,7 +18,7 @@ from telegram.ext import (
 
 # ---------------- CONFIGURATION ----------------
 BOT_TOKEN = "9076286788:AAFcfibMCKsdMVvkkt3ajfacE6KRyLYAuLY"
-ADMINS = ["raj1235567", "gotit", "virat"]  # sky_bhaiya removed
+ADMINS = ["raj1235567", "gotit", "virat"]
 COMMISSION_PERCENT = 10
 PORT = int(os.environ.get("PORT", 10000))
 
@@ -77,13 +78,14 @@ CREATE TABLE IF NOT EXISTS meta (
     val INTEGER
 )
 """)
-c.execute("INSERT OR IGNORE INTO meta (key, val) VALUES ('table_counter', 88)")
+# Table counter reset to 0 so the first table starts at 1
+c.execute("INSERT OR REPLACE INTO meta (key, val) VALUES ('table_counter', 0)")
 db.commit()
 
 def get_next_counter(key_name):
     c.execute("SELECT val FROM meta WHERE key = ?", (key_name,))
     row = c.fetchone()
-    current = row["val"] if row else 88
+    current = row["val"] if row else 0
     nxt = current + 1
     c.execute("UPDATE meta SET val = ? WHERE key = ?", (nxt, key_name))
     db.commit()
@@ -127,6 +129,12 @@ def detect_mode(text):
     if any(x in t for x in ["timer", "fast", "quick", "speed"]) or re.search(r"\b\d+\s*t\b", t):
         return "Timer"
     return "full"
+
+def get_clickable_mention(user):
+    if user.username:
+        return f"@{user.username}"
+    safe_name = (user.first_name or "Player").replace("<", "&lt;").replace(">", "&gt;")
+    return f'<a href="tg://user?id={user.id}">{safe_name}</a>'
 
 async def safe_delete(context: ContextTypes.DEFAULT_TYPE, chat_id, message_id):
     try:
@@ -279,6 +287,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     chat_id=query.message.chat_id,
                     message_id=est_msg_id,
                     text=card2_cancel,
+                    parse_mode=ParseMode.HTML,
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Check Estimate", callback_data=f"est:{gid}")]])
                 )
             except Exception:
@@ -328,6 +337,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     chat_id=query.message.chat_id,
                     message_id=est_msg_id,
                     text=card2_settled,
+                    parse_mode=ParseMode.HTML,
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Check Estimate", callback_data=f"est:{gid}")]])
                 )
             except Exception:
@@ -337,7 +347,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🏆 TABLE #{table_no} WINNER! 🏆\n\n"
             f"👑 Winner: {win_name}\n"
             f"💰 Credited: ₹{win_amt:.1f} ({COMMISSION_PERCENT}% Cut)\n"
-            f"💵 New Balance: ₹{new_w_bal:.1f}"
+            f"💵 New Balance: ₹{new_w_bal:.1f}",
+            parse_mode=ParseMode.HTML
         )
         await sync_sheet(query.message.chat_id, context)
         asyncio.create_task(delayed_delete(context, query.message.chat_id, win_msg.message_id, 30))
@@ -357,7 +368,6 @@ async def photo_cleaner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sender_uname = (sender.username or "").lower()
     caption = (update.message.caption or "").lower()
 
-    # Rose Bot ya QR photo ko 1 min (60 seconds) mein delete karo
     is_rose_or_qr = ("rose" in sender_name or "rose" in sender_uname or sender.is_bot or "qr" in caption)
     if is_rose_or_qr:
         asyncio.create_task(delayed_delete(context, chat_id, msg_id, 60))
@@ -422,7 +432,7 @@ async def router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 new_bal = old_bal + amt
                 update_bal(target.id, new_bal)
 
-                t_disp = f"@{target.username}" if target.username else target.first_name
+                t_disp = get_clickable_mention(target)
                 card = (
                     "Balance Added ✅\n\n"
                     f"💵 New Balance: {new_bal:.1f}\n"
@@ -430,7 +440,7 @@ async def router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"changes: {old_bal:.1f} + {amt:.1f}"
                 )
                 kb = InlineKeyboardMarkup([[InlineKeyboardButton("💳 Full Details", callback_data=f"details:{target.id}")]])
-                sent = await update.message.reply_text(card, reply_markup=kb)
+                sent = await update.message.reply_text(card, reply_markup=kb, parse_mode=ParseMode.HTML)
                 await sync_sheet(chat_id, context)
                 asyncio.create_task(delayed_delete(context, chat_id, sent.message_id, 60))
                 return
@@ -447,7 +457,7 @@ async def router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 new_bal = old_bal - amt
                 update_bal(target.id, new_bal)
 
-                t_disp = f"@{target.username}" if target.username else target.first_name
+                t_disp = get_clickable_mention(target)
                 card = (
                     "Balance Minus ⛔\n\n"
                     f"💵 New Balance: {new_bal:.1f}\n"
@@ -455,7 +465,7 @@ async def router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"changes: {old_bal:.1f} - {amt:.1f}"
                 )
                 kb = InlineKeyboardMarkup([[InlineKeyboardButton("💳 Full Details", callback_data=f"details:{target.id}")]])
-                sent = await update.message.reply_text(card, reply_markup=kb)
+                sent = await update.message.reply_text(card, reply_markup=kb, parse_mode=ParseMode.HTML)
                 await sync_sheet(chat_id, context)
                 asyncio.create_task(delayed_delete(context, chat_id, sent.message_id, 60))
                 return
@@ -464,7 +474,7 @@ async def router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if clean_cmd in ["info", "bal", "balance", "mybal"]:
         target = update.message.reply_to_message.from_user if (update.message.reply_to_message and is_admin) else sender
         user_row = get_or_create_user(target)
-        t_disp = f"@{target.username}" if target.username else target.first_name
+        t_disp = get_clickable_mention(target)
 
         info_card = (
             f"💰 {t_disp}'s INFO:\n\n"
@@ -473,12 +483,12 @@ async def router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"⌛ In-Match: {'True' if user_row['in_match'] else 'False'}"
         )
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("💳 Full Details", callback_data=f"details:{target.id}")]])
-        sent = await update.message.reply_text(info_card, reply_markup=kb)
+        sent = await update.message.reply_text(info_card, reply_markup=kb, parse_mode=ParseMode.HTML)
         asyncio.create_task(delayed_delete(context, chat_id, sent.message_id, 30))
         asyncio.create_task(delayed_delete(context, chat_id, update.message.message_id, 30))
         return
 
-    # 6. TABLE MATCHING (REPLY-TRIGGER + VIDEO WORKFLOW)
+    # 6. TABLE MATCHING (CLICKABLE USERNAME + START FROM 1)
     if update.message.reply_to_message:
         replied_msg = update.message.reply_to_message
 
@@ -505,13 +515,14 @@ async def router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 h_bal = float(h_rec["balance"])
                 o_bal = float(o_rec["balance"])
 
-                h_disp = host.first_name or host.username or "Player 1"
-                o_disp = opp.first_name or opp.username or "Player 2"
+                # Clickable usernames/mentions
+                h_disp = get_clickable_mention(host)
+                o_disp = get_clickable_mention(opp)
 
                 # THRESHOLD LIMIT CHECK
                 if h_bal < amt or o_bal < amt:
                     h_dot = "🟢" if h_bal >= amt else "🔴"
-                    o_dot = "🟢" if o_bal >= amt else "🔴"
+                   o_dot = "🟢" if o_bal >= amt else "🔴"
 
                     fail_card = (
                         "🔴 Failed because one of the users would have a balance below the minimum threshold (0).\n\n"
@@ -520,7 +531,7 @@ async def router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         f"{o_dot} {o_disp} estimate:\n"
                         f"{o_bal:.1f} - {amt:.1f} ➔ {(o_bal - amt):.1f}"
                     )
-                    err = await update.message.reply_text(fail_card)
+                    err = await update.message.reply_text(fail_card, parse_mode=ParseMode.HTML)
                     asyncio.create_task(delayed_delete(context, chat_id, err.message_id, 25))
                     return
 
@@ -541,6 +552,7 @@ async def router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 c.execute("UPDATE users SET in_match = 1 WHERE user_id IN (?, ?)", (host.id, opp.id))
                 db.commit()
 
+                # CARD 1: TABLE MASTER CARD
                 card1_kb = InlineKeyboardMarkup([
                     [InlineKeyboardButton("🛑 Cancel This Table", callback_data=f"cancel:{gid}")],
                     [
@@ -555,6 +567,7 @@ async def router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"{int(amt)} ✅ {mode}"
                 )
 
+                # CARD 2: ACTION ESTIMATE CARD
                 card2_kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Check Estimate", callback_data=f"est:{gid}")]])
                 card2_text = (
                     f"Action #{t_num} successful! ✅\n\n"
@@ -571,10 +584,10 @@ async def router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if LAST_ACTIVE_ESTIMATE_MSG_ID:
                     asyncio.create_task(delayed_delete(context, chat_id, LAST_ACTIVE_ESTIMATE_MSG_ID, 30))
 
-                sent_card1 = await update.message.reply_text(card1_text, reply_markup=card1_kb)
+                sent_card1 = await update.message.reply_text(card1_text, reply_markup=card1_kb, parse_mode=ParseMode.HTML)
                 LAST_ACTIVE_TABLE_MSG_ID = sent_card1.message_id
 
-                sent_card2 = await context.bot.send_message(chat_id=chat_id, text=card2_text, reply_markup=card2_kb)
+                sent_card2 = await context.bot.send_message(chat_id=chat_id, text=card2_text, reply_markup=card2_kb, parse_mode=ParseMode.HTML)
                 LAST_ACTIVE_ESTIMATE_MSG_ID = sent_card2.message_id
 
                 c.execute("UPDATE games SET estimate_msg_id = ? WHERE id = ?", (sent_card2.message_id, gid))
