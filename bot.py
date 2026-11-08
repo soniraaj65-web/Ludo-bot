@@ -1,5 +1,6 @@
 import os
 import re
+import asyncio
 import sqlite3
 import logging
 from threading import Thread
@@ -25,20 +26,23 @@ GROUP_LOCKED = False
 ACTION_COUNTER = 90
 PINNED_SHEET_MSG_ID = None
 
+# Track last open message ID per user: {username: message_id}
+USER_LAST_BET_MSG = {}
+
 BAD_WORDS = [
     "mc", "bc", "bhosdike", "chutiya", "madarchod", "gandu", 
     "lauda", "lodu", "behenchod", "harami", "bkl", "bsdk", "randi",
-    "chudai", "madarjat", "bhen ke lode"
+    "chudai", "madarjat", "bhen ke lode", "mkl"
 ]
 
 logging.basicConfig(level=logging.INFO)
 
-# ---------------- DUMMY HTTP SERVER (RENDER KEEP-ALIVE) ----------------
+# ---------------- DUMMY HTTP SERVER (RENDER 24/7) ----------------
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Sky Table Powar Live Engine!")
+        self.wfile.write(b"Sky Table Powar Ultimate Engine Live!")
 
 def run_server():
     server = HTTPServer(("0.0.0.0", PORT), SimpleHandler)
@@ -93,7 +97,7 @@ def update_user_balance(username, new_bal, name=None):
     db.commit()
 
 def parse_amount(text):
-    k_match = re.search(r"(\d+(?:\.\d+)?)\s*k", text)
+    k_match = re.search(r"(\d+(?:\.\d+)?)\s*k", text, re.IGNORECASE)
     if k_match:
         return float(k_match.group(1)) * 1000.0
     num_match = re.search(r"\b(\d+)\b", text)
@@ -101,16 +105,20 @@ def parse_amount(text):
         return float(num_match.group(1))
     return None
 
-# ---------------- PINNED SHEET GENERATOR & SYNC ----------------
+async def safe_delete(context: ContextTypes.DEFAULT_TYPE, chat_id, message_id):
+    try:
+        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except Exception:
+        pass
+
+# ---------------- PINNED SHEET GENERATOR & LIVE SYNC ----------------
 def generate_sheet_text():
     c.execute("SELECT name, username, balance FROM users WHERE balance > 0 ORDER BY balance DESC")
     rows = c.fetchall()
-    
     total_balance = sum(r["balance"] for r in rows)
     
-    text = "📊 **SKY KING CLUB • LIVE BALANCE SHEET** 📊\n"
+    text = "📊 **THE LUDO EMPIRE • LIVE BALANCE SHEET** 📊\n"
     text += "──────────────────────────────\n"
-    
     if not rows:
         text += "• _Filhal sabhi accounts 0.0 par hain._\n"
     else:
@@ -120,7 +128,7 @@ def generate_sheet_text():
             
     text += "──────────────────────────────\n"
     text += f"💰 **Total Club Balance:** ₹{total_balance:.1f}\n"
-    text += "🔄 _Yeh list real-time auto update hoti hai._"
+    text += "🔄 _Yeh ledger real-time auto update hota hai._"
     return text
 
 async def sync_pinned_sheet(chat_id, context: ContextTypes.DEFAULT_TYPE):
@@ -137,23 +145,6 @@ async def sync_pinned_sheet(chat_id, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logging.error(f"Error auto-updating pinned sheet: {e}")
 
-# ---------------- WELCOME HANDLER ----------------
-async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    result = update.chat_member
-    if result.old_chat_member.status in ["left", "kicked"] and result.new_chat_member.status in ["member", "administrator"]:
-        new_user = result.new_chat_member.user
-        mention = f"@{new_user.username}" if new_user.username else new_user.first_name
-        
-        welcome_text = (
-            f"👋 *WELCOME TO SKY KING LUDO CLUB, {mention}!* 🎲\n\n"
-            "✨ *Direct table lagane ke liye likhein:*\n"
-            "👉 `50` | `100` | `500 full` | `50 t` | `1k` | `5kff`\n\n"
-            "• Challenge par reply karke `ok` ya `lga` karein (Match Fix & Pay)\n"
-            "• Info dekhne ke liye: `info`\n"
-            "• Deposit ke liye: `qr`"
-        )
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=welcome_text, parse_mode="Markdown")
-
 # ---------------- QR HELPER ----------------
 async def send_qr_message(chat_id, context: ContextTypes.DEFAULT_TYPE, reply_to_id=None):
     caption = (
@@ -168,9 +159,26 @@ async def send_qr_message(chat_id, context: ContextTypes.DEFAULT_TYPE, reply_to_
     else:
         await context.bot.send_message(chat_id=chat_id, text=caption, parse_mode="Markdown", reply_to_message_id=reply_to_id)
 
-# ---------------- MAIN ZERO-SLASH PROCESSING ENGINE ----------------
+# ---------------- WELCOME HANDLER ----------------
+async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    result = update.chat_member
+    if result.old_chat_member.status in ["left", "kicked"] and result.new_chat_member.status in ["member", "administrator"]:
+        new_user = result.new_chat_member.user
+        mention = f"@{new_user.username}" if new_user.username else new_user.first_name
+        
+        welcome_text = (
+            f"👋 *WELCOME TO THE LUDO EMPIRE, {mention}!* 🎲\n\n"
+            "✨ *Direct table lagane ke liye amount likhein:*\n"
+            "👉 `50` | `100` | `500 full` | `50 t` | `1k` | `5kff`\n\n"
+            "• Challenge par reply karke `ok` ya `lga` karein (Match Fix & Pay)\n"
+            "• Info check karne ke liye: `info`\n"
+            "• QR/Deposit ke liye: `qr`"
+        )
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=welcome_text, parse_mode="Markdown")
+
+# ---------------- COMPLETE ULTRA-RESPONSIVE ENGINE ----------------
 async def zero_slash_table_power(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global GROUP_LOCKED, ACTION_COUNTER, PINNED_SHEET_MSG_ID
+    global GROUP_LOCKED, ACTION_COUNTER, PINNED_SHEET_MSG_ID, USER_LAST_BET_MSG
     if not update.message or not update.message.text:
         return
 
@@ -194,51 +202,32 @@ async def zero_slash_table_power(update: Update, context: ContextTypes.DEFAULT_T
                 disable_notification=True
             )
             PINNED_SHEET_MSG_ID = sent_msg.message_id
-            await update.message.reply_text("📌 *Balance Sheet successfully pinned! Ab yeh automatic live update hoti rahegi.*", parse_mode="Markdown")
+            await update.message.reply_text("📌 *Balance Sheet successfully pinned! Ab yeh real-time live update hoti rahegi.*", parse_mode="Markdown")
         except Exception as e:
             logging.error(f"Pin message error: {e}")
-            await update.message.reply_text("⚠️ Bot ko 'Pin Messages' ki admin permission check karein!")
         return
 
-    # 2. LOCK / UNLOCK SYSTEM (Admin)
+    # 2. LOCK / UNLOCK SYSTEM
     if clean_cmd in ["lock", "close", "band"]:
         if sender_clean in ADMINS:
             GROUP_LOCKED = True
             await update.message.reply_text("🔒 *TABLE LOCK HO GAYI HAI!* Naye matches lagana band hai.", parse_mode="Markdown")
             return
-    elif clean_cmd in ["unlock", "open group", "chalu", "start"]:
+    elif clean_cmd in ["unlock", "open group", "chalu", "start", "khula"]:
         if sender_clean in ADMINS:
             GROUP_LOCKED = False
             await update.message.reply_text("🔓 *TABLE OPEN HO GAYI HAI!* Khelna shuru kar sakte hain.", parse_mode="Markdown")
             return
 
-    # 3. ANTI-GALI & ANTI-LINK FILTER (Admins Bypassed)
+    # 3. ANTI-GALI & ANTI-LINK FILTER (Instant Background Purge)
     if sender_clean not in ADMINS:
         words = text.split()
-        if any(bad in words or bad in text for bad in BAD_WORDS):
-            try:
-                await update.message.delete()
-                await context.bot.send_message(
-                    chat_id=update.effective_chat.id,
-                    text=f"⚠️ {sender_name}, abusive bhasha delete kar di gayi hai!"
-                )
-            except Exception as e:
-                logging.error(f"Moderation error: {e}")
+        if any(bad in words or bad in text for bad in BAD_WORDS) or ("http://" in text or "https://" in text or "t.me/" in text):
+            asyncio.create_task(safe_delete(context, update.effective_chat.id, update.message.message_id))
             return
 
-        if "http://" in text or "https://" in text or "t.me/" in text:
-            try:
-                await update.message.delete()
-                await context.bot.send_message(
-                    chat_id=update.effective_chat.id,
-                    text=f"⚠️ {sender_name}, promotional links allowed nahi hain!"
-                )
-            except Exception as e:
-                logging.error(f"Link deletion error: {e}")
-            return
-
-    # 4. ADMIN REPLY BALANCE ADD (e.g. "add 1k", "+1000", "ubdet 1k", "add 50")
-    add_match = re.match(r"^(?:/)?(?:add|addbal|\+|ubdet|update bal|update)\s*(\d+(?:\.\d+)?\s*k|\d+)", text)
+    # 4. ADMIN REPLY BALANCE ADD (e.g. "add 1k", "+500", "ubdet 1k", "credit 1k")
+    add_match = re.match(r"^(?:/)?(?:add|addbal|\+|ubdet|update bal|update|credit)\s*(\d+(?:\.\d+)?\s*k|\d+)", text)
     if update.message.reply_to_message and add_match and sender_clean in ADMINS:
         replied_user = update.message.reply_to_message.from_user
         if replied_user:
@@ -262,8 +251,8 @@ async def zero_slash_table_power(update: Update, context: ContextTypes.DEFAULT_T
                 await sync_pinned_sheet(update.effective_chat.id, context)
                 return
 
-    # 5. ADMIN REPLY BALANCE CUT (e.g. "cut 500", "-500", "cut 50")
-    cut_match = re.match(r"^(?:/)?(?:cut|cutbal|-)\s*(\d+(?:\.\d+)?\s*k|\d+)", text)
+    # 5. ADMIN REPLY BALANCE CUT (e.g. "cut 500", "-500", "debit 500", "kat 500")
+    cut_match = re.match(r"^(?:/)?(?:cut|cutbal|-|debit|kat)\s*(\d+(?:\.\d+)?\s*k|\d+)", text)
     if update.message.reply_to_message and cut_match and sender_clean in ADMINS:
         replied_user = update.message.reply_to_message.from_user
         if replied_user:
@@ -287,8 +276,8 @@ async def zero_slash_table_power(update: Update, context: ContextTypes.DEFAULT_T
                 await sync_pinned_sheet(update.effective_chat.id, context)
                 return
 
-    # 6. USER INFO CARD (e.g. "info", "bal")
-    if clean_cmd in ["info", "bal", "balance", "mybal", "profile", "passbook"]:
+    # 6. USER INFO CARD
+    if clean_cmd in ["info", "bal", "balance", "mybal", "profile"]:
         user_rec = get_user_data(sender_username, sender_name)
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("💳 Full Details", callback_data="none")]])
         msg = (
@@ -300,22 +289,12 @@ async def zero_slash_table_power(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=keyboard)
         return
 
-    # 7. DIRECT QR & PAYMENT TRIGGERS
+    # 7. QR CODE
     if clean_cmd in ["qr", "payment", "scanner", "pay", "upi", "paisa"]:
         await send_qr_message(update.effective_chat.id, context, update.message.message_id)
         return
 
-    # 8. CANCEL OPEN CHALLENGE
-    if clean_cmd in ["cancel", "delete", "hatao", "back"]:
-        c.execute("SELECT id FROM games WHERE host = ? AND status = 'OPEN'", (sender_clean,))
-        row = c.fetchone()
-        if row:
-            c.execute("DELETE FROM games WHERE id = ?", (row["id"],))
-            db.commit()
-            await update.message.reply_text(f"✅ @{sender_clean}, open challenge cancel kar diya gaya.")
-        return
-
-    # 9. DIRECT WITHDRAWAL (e.g. "wd 500 upi@id" / "withdraw 100 name@okaxis")
+    # 8. WITHDRAWAL
     wd_match = re.match(r"^(?:/)?(?:withdraw|wd|nikalo)\s+(\d+)\s+([a-zA-Z0-9.\-_+@]+)$", text)
     if wd_match:
         amt = float(wd_match.group(1))
@@ -327,7 +306,6 @@ async def zero_slash_table_power(update: Update, context: ContextTypes.DEFAULT_T
 
         update_user_balance(sender_username, user_rec["balance"] - amt)
         await sync_pinned_sheet(update.effective_chat.id, context)
-
         msg = (
             f"🔔 **WITHDRAWAL REQUEST**\n\n"
             f"• User: @{sender_username}\n"
@@ -338,7 +316,7 @@ async def zero_slash_table_power(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text(msg, parse_mode="Markdown")
         return
 
-    # 10. LUDO KING ROOM CODE DETECTION (8-digit number)
+    # 9. LUDO KING ROOM CODE (8 DIGITS ANYWHERE)
     code_match = re.search(r"\b\d{8}\b", text)
     if code_match or clean_cmd.startswith("code "):
         code_val = code_match.group(0) if code_match else clean_cmd.replace("code", "").strip()
@@ -351,14 +329,21 @@ async def zero_slash_table_power(update: Update, context: ContextTypes.DEFAULT_T
             )
             return
 
-    # 11. REPLY TO ACCEPT & FIX MATCH ("ok", "lga", "lagao", "play", "done")
-    accept_keywords = ["ok", "lga", "lagao", "done", "play", "khelna", "ao", "aao", "yes", "set", "khelo"]
-    if update.message.reply_to_message and clean_cmd in accept_keywords:
+    # 10. EXPANDED POSITIVE REPLY KEYWORDS + STRICT BALANCE CHECK + DUAL PURGE
+    positive_replies = [
+        "ok", "okay", "lga", "lagao", "laga do", "play", "done", "khelna", 
+        "khelo", "ao", "aao", "yes", "set", "ha", "haa", "accept", "match", 
+        "deal", "aaja", "aajao", "bhejo", "dal", "daal", "confirm", "ready"
+    ]
+    is_positive_reply = any(clean_cmd == p or clean_cmd.startswith(p + " ") or clean_cmd.endswith(" " + p) for p in positive_replies)
+
+    if update.message.reply_to_message and is_positive_reply:
         if GROUP_LOCKED:
             await update.message.reply_text("🔒 Group currently locked hai.")
             return
 
-        replied_user = update.message.reply_to_message.from_user
+        replied_msg = update.message.reply_to_message
+        replied_user = replied_msg.from_user
         if not replied_user:
             return
 
@@ -368,24 +353,46 @@ async def zero_slash_table_power(update: Update, context: ContextTypes.DEFAULT_T
         opp_name = sender_name
 
         if host_uname.lower() == opp_uname.lower():
-            await update.message.reply_text("❌ Khud ke challenge par match fix nahi kar sakte.")
             return
 
-        amt = parse_amount(update.message.reply_to_message.text or "") or 50.0
+        amt = parse_amount(replied_msg.text or "")
+        if not amt:
+            return
 
         host_rec = get_user_data(host_uname, host_name)
         opp_rec = get_user_data(opp_uname, opp_name)
 
+        # STRICT BALANCE CHECK
+        low_balance_users = []
+        if host_rec["balance"] < amt:
+            low_balance_users.append(f"@{host_uname} (₹{host_rec['balance']})")
+        if opp_rec["balance"] < amt:
+            low_balance_users.append(f"@{opp_uname} (₹{opp_rec['balance']})")
+
+        if low_balance_users:
+            low_str = " aur ".join(low_balance_users)
+            await update.message.reply_text(
+                f"❌ **Table nahi lag sakti!**\n\n{low_str} ke paas ₹{int(amt)} balance nahi hai.\n\nDeposit karne ke liye chat mein `qr` bhejein."
+            )
+            return
+
+        # Deduct match entry balance
+        update_user_balance(host_uname, host_rec["balance"] - amt)
+        update_user_balance(opp_uname, opp_rec["balance"] - amt)
+
         ACTION_COUNTER += 1
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Check Estimate", callback_data="none")]])
 
+        tag_host = f"@{host_uname}" if replied_user.username else host_name
+        tag_opp = f"@{opp_uname}" if sender.username else opp_name
+
         msg = (
-            f"@{host_uname} @{opp_uname}\n"
+            f"{tag_host} {tag_opp}\n"
             f"{int(amt)}✅\n\n"
-            f"**Action #{ACTION_COUNTER} successful! ✅**\n\n"
-            f"🔴 **{host_name} estimate:**\n"
+            f"Action #{ACTION_COUNTER} successful! ✅\n\n"
+            f"🔴 {host_name} estimate:\n"
             f"{host_rec['balance']} - {amt} ➔ {host_rec['balance'] - amt}\n\n"
-            f"🟢 **{opp_name} estimate:**\n"
+            f"🟢 {opp_name} estimate:\n"
             f"{opp_rec['balance']} - {amt} ➔ {opp_rec['balance'] - amt}"
         )
 
@@ -393,11 +400,24 @@ async def zero_slash_table_power(update: Update, context: ContextTypes.DEFAULT_T
         c.execute("UPDATE users SET in_match = 1 WHERE username IN (?, ?)", (host_uname.lower(), opp_uname.lower()))
         db.commit()
 
-        await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=keyboard)
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=msg,
+            reply_markup=keyboard
+        )
+
+        # DUAL AUTO DELETE: Purana Bet Message + Opponent OK Message
+        asyncio.create_task(safe_delete(context, update.effective_chat.id, replied_msg.message_id))
+        asyncio.create_task(safe_delete(context, update.effective_chat.id, update.message.message_id))
+
+        if host_clean := (replied_user.username or "").lower().replace("@", ""):
+            USER_LAST_BET_MSG.pop(host_clean, None)
+
+        await sync_pinned_sheet(update.effective_chat.id, context)
         return
 
-    # 12. WINNER RESULT VIA REPLY ("win", "winner", "ss")
-    if update.message.reply_to_message and clean_cmd in ["win", "winner", "ss", "loss"] and sender_clean in ADMINS:
+    # 11. WINNER RESULT VIA REPLY
+    if update.message.reply_to_message and clean_cmd in ["win", "winner", "ss", "pass", "loss"] and sender_clean in ADMINS:
         replied_user = update.message.reply_to_message.from_user
         if replied_user:
             target_uname = replied_user.username or replied_user.first_name
@@ -425,33 +445,18 @@ async def zero_slash_table_power(update: Update, context: ContextTypes.DEFAULT_T
                 await sync_pinned_sheet(update.effective_chat.id, context)
                 return
 
-    # 13. UNIVERSAL NATURAL MARKET CHALLENGE HIT ENGINE
-    # Matches: 50, 100, 500, 500 full, 50 t, 1k, 5kff, 2k quick, 5k full 500+++, etc.
-    bet_pattern = re.search(r"\b(\d+(?:\.\d+)?)\s*(k)?\s*(full|classic|timer|quick|fast|t|ff|f)?\b", text)
+    # 12. SILENT BET WITH OLD MESSAGE PURGE
+    # Matches: 50, 100, 500 full, 50 t, 1k, 5kff, 2k quick, 5k full 500+++, choda, etc.
+    bet_pattern = re.search(r"\b(\d+(?:\.\d+)?)\s*(k)?\s*(full|classic|timer|quick|fast|speed|t|ff|f)?\b", text)
     if bet_pattern:
-        val = float(bet_pattern.group(1))
-        is_k = bet_pattern.group(2)
-        tag = (bet_pattern.group(3) or "").lower()
-
-        amt = val * 1000.0 if is_k else val
-
-        if amt >= 10.0:
-            if GROUP_LOCKED:
-                await update.message.reply_text("🔒 Group currently locked hai.")
-                return
-
-            mode = "TIMER" if tag in ["t", "timer", "quick", "fast"] else "FULL"
-
-            c.execute("INSERT INTO games (host, amount, mode, status) VALUES (?, ?, ?, 'OPEN')", (sender_clean, amt, mode))
-            db.commit()
-
-            await update.message.reply_text(
-                f"🎲 **TABLE OPENED ({mode})**\n\n"
-                f"👤 Host: @{sender_clean}\n"
-                f"💰 Amount: **₹{int(amt) if amt.is_integer() else amt}**\n\n"
-                f"👉 Khelne ke liye reply karein: `ok` ya `lga`"
-            )
+        amt = parse_amount(text)
+        if amt and amt >= 10.0:
+            if old_mid := USER_LAST_BET_MSG.get(sender_clean):
+                asyncio.create_task(safe_delete(context, update.effective_chat.id, old_mid))
+            USER_LAST_BET_MSG[sender_clean] = update.message.message_id
             return
+
+    return
 
 # Global Error Handler
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -469,7 +474,7 @@ def main():
 
     app.add_error_handler(error_handler)
 
-    logging.info("Zero-Slash Engine with Pinned Sheet Active...")
+    logging.info("Ultra-Clean Auto-Delete Engine Live & Polling...")
     app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
